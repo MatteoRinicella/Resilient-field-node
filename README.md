@@ -24,7 +24,7 @@
 
 <p align="center">
   <a href="https://github.com/MatteoRinicella/Resilient-field-node/issues/1">
-    <img src="docs/images/video-cover.svg" alt="Guarda il video dimostrativo" width="760">
+    <img src="docs/images/video-cover-v2.png" alt="Guarda il video dimostrativo della protezione" width="760">
   </a>
 </p>
 

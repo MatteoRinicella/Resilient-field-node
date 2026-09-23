@@ -1,0 +1,1 @@
+print("Resilient Field Node - ambiente Python operativo")

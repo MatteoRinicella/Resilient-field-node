@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="title description">
+  <title id="title">Video dimostrativo Resilient Field Node</title>
+  <description id="description">Copertina cliccabile del video dimostrativo.</description>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a2033"/>
+      <stop offset="1" stop-color="#176b75"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="540" rx="22" fill="url(#bg)"/>
+  <text x="480" y="150" text-anchor="middle" fill="#ffffff" font-family="Segoe UI, Arial, sans-serif" font-size="42" font-weight="700">DEMO DELLA PROTEZIONE</text>
+  <text x="480" y="198" text-anchor="middle" fill="#b7dce3" font-family="Segoe UI, Arial, sans-serif" font-size="22">Sovracorrente · Trip · Apertura del relè</text>
+  <circle cx="480" cy="315" r="76" fill="#ffffff" opacity="0.95"/>
+  <polygon points="457,272 457,358 530,315" fill="#0d5263"/>
+  <text x="480" y="452" text-anchor="middle" fill="#ffffff" font-family="Segoe UI, Arial, sans-serif" font-size="21">Premi per guardare il video completo</text>
+</svg>

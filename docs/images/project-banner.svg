@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title description">
+  <title id="title">Resilient Field Node</title>
+  <description id="description">Banner del progetto con il percorso sensore, ESP32, protezione, relè e gateway.</description>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071a2b"/>
+      <stop offset="1" stop-color="#123f53"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="420" rx="26" fill="url(#background)"/>
+  <circle cx="1080" cy="60" r="170" fill="#1ec8a5" opacity="0.08"/>
+  <circle cx="90" cy="395" r="210" fill="#42a5f5" opacity="0.08"/>
+
+  <text x="600" y="82" text-anchor="middle" fill="#ffffff" font-family="Segoe UI, Arial, sans-serif" font-size="46" font-weight="700">RESILIENT FIELD NODE</text>
+  <text x="600" y="120" text-anchor="middle" fill="#a9c9d6" font-family="Segoe UI, Arial, sans-serif" font-size="21">Protezione locale autonoma, misura reale e connettività resiliente</text>
+
+  <g filter="url(#shadow)" font-family="Segoe UI, Arial, sans-serif">
+    <g transform="translate(70 190)">
+      <rect width="190" height="112" rx="18" fill="#102f43" stroke="#42a5f5" stroke-width="2"/>
+      <text x="95" y="47" text-anchor="middle" fill="#42a5f5" font-size="19" font-weight="700">INA219</text>
+      <text x="95" y="76" text-anchor="middle" fill="#ffffff" font-size="16">Misura corrente</text>
+    </g>
+    <path d="M270 246 H330" stroke="#86d8ff" stroke-width="4"/>
+    <polygon points="330,246 317,238 317,254" fill="#86d8ff"/>
+
+    <g transform="translate(340 170)">
+      <rect width="220" height="152" rx="18" fill="#102f43" stroke="#1ec8a5" stroke-width="3"/>
+      <text x="110" y="55" text-anchor="middle" fill="#1ec8a5" font-size="25" font-weight="700">ESP32</text>
+      <text x="110" y="88" text-anchor="middle" fill="#ffffff" font-size="16">Logica di protezione</text>
+      <text x="110" y="116" text-anchor="middle" fill="#a9c9d6" font-size="14">Fail-safe · FreeRTOS</text>
+    </g>
+
+    <path d="M570 246 H630" stroke="#86d8ff" stroke-width="4"/>
+    <polygon points="630,246 617,238 617,254" fill="#86d8ff"/>
+    <g transform="translate(640 190)">
+      <rect width="190" height="112" rx="18" fill="#102f43" stroke="#ffb74d" stroke-width="2"/>
+      <text x="95" y="47" text-anchor="middle" fill="#ffb74d" font-size="19" font-weight="700">RELÈ</text>
+      <text x="95" y="76" text-anchor="middle" fill="#ffffff" font-size="16">Apertura carico</text>
+    </g>
+
+    <path d="M840 246 H900" stroke="#86d8ff" stroke-width="4"/>
+    <polygon points="900,246 887,238 887,254" fill="#86d8ff"/>
+    <g transform="translate(910 190)">
+      <rect width="220" height="112" rx="18" fill="#102f43" stroke="#b39ddb" stroke-width="2"/>
+      <text x="110" y="47" text-anchor="middle" fill="#b39ddb" font-size="19" font-weight="700">GATEWAY</text>
+      <text x="110" y="76" text-anchor="middle" fill="#ffffff" font-size="16">Eventi e controllo</text>
+    </g>
+  </g>
+
+  <text x="600" y="375" text-anchor="middle" fill="#dcecf2" font-family="Segoe UI, Arial, sans-serif" font-size="17">ESP-IDF · C · Python · I2C · Wi-Fi · SQLite</text>
+</svg>

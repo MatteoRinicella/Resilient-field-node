@@ -1,0 +1,11 @@
+menu "Resilient Field Node"
+
+    config RFN_WIFI_SSID
+        string "Nome rete Wi-Fi (SSID)"
+        default ""
+
+    config RFN_WIFI_PASSWORD
+        string "Password rete Wi-Fi"
+        default ""
+
+endmenu

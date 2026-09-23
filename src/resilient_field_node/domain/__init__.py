@@ -1,0 +1,1 @@
+"""Core models and rules indipendent from infrastructure"""

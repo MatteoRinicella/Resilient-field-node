@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "esp32.c"
+        "oled_display.c"
+        "rtc_ds3231.c"
+        "wifi_connection.c"
+        "network_time.c"
+        "../../../c/src/resilient_field_node.c"
+    INCLUDE_DIRS
+        "."
+        "../../../c/include"
+    PRIV_REQUIRES
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_wifi
+        esp_event
+        esp_netif
+        nvs_flash
+)

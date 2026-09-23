@@ -1,0 +1,11 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+  "python.terminal.activateEnvironment": true,
+  "code-runner.showRunIconInEditorTitleMenu": true,
+  "code-runner.runInTerminal": true,
+  "code-runner.saveFileBeforeRun": true,
+  "C_Cpp.default.compilerPath": "gcc",
+  "code-runner.executorMap": {
+    "c": "$cBuildDir = \"$workspaceRoot\\c\\build\"; New-Item -ItemType Directory -Force -Path $cBuildDir | Out-Null; gcc \"$fullFileName\" \"$workspaceRoot\\c\\src\\resilient_field_node.c\" -I \"$workspaceRoot\\c\\include\" -Wall -Wextra -std=c11 -o \"$cBuildDir\\$fileNameWithoutExt.exe\"; if ($LASTEXITCODE -eq 0) { & \"$cBuildDir\\$fileNameWithoutExt.exe\" }"
+  }
+}

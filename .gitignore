@@ -1,0 +1,36 @@
+# Ambiente virtuale locale
+.venv/
+
+# Cache create da Python
+__pycache__/
+*.py[cod]
+
+# Informazioni generate dall'installazione del pacchetto
+*.egg-info/
+
+# Risultati generati dai test
+.pytest_cache/
+
+# Cartelle create durante la costruzione del pacchetto
+build/
+dist/
+
+# Database SQLite locali
+*.db
+*.db-shm
+*.db-wal
+
+# Configurazione locale ESP-IDF contenente anche le credenziali Wi-Fi
+firmware/esp32/sdkconfig
+firmware/esp32/sdkconfig.old
+
+# Configurazioni locali di VS Code con percorsi specifici del computer
+**/.vscode/settings.json
+
+# Log e file temporanei locali
+*.log
+*.tmp
+
+# File generati dal sistema operativo
+.DS_Store
+Thumbs.db

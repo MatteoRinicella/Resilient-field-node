@@ -28,8 +28,6 @@
   </a>
 </p>
 
-Le fotografie e il video definitivo verranno aggiunti al termine del montaggio hardware. I nomi dei file richiesti sono descritti in [`docs/MEDIA_GUIDE.md`](docs/MEDIA_GUIDE.md).
-
 ## Obiettivo della prima milestone
 
 Realizzare un MVP software eseguibile su PC che simuli un nodo di campo capace di acquisire misure, applicare una protezione locale e conservare gli eventi anche quando il gateway non è disponibile.

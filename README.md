@@ -23,7 +23,7 @@
 ## Video dimostrativo
 
 <p align="center">
-  <a href="docs/demo/resilient-field-node-demo.mp4">
+  <a href="docs/demo/resilient-field-node-demo.mp4?raw=1">
     <img src="docs/images/video-cover.svg" alt="Guarda il video dimostrativo" width="760">
   </a>
 </p>

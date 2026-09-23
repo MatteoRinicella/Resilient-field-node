@@ -24,7 +24,7 @@
 
 <p align="center">
   <a href="https://github.com/MatteoRinicella/Resilient-field-node/issues/1">
-    <img src="docs/images/video-cover-v2.png" alt="Guarda il video dimostrativo della protezione" width="760">
+    <img src="docs/images/video-cover.png" alt="Guarda il video dimostrativo della protezione" width="760">
   </a>
 </p>
 
@@ -390,4 +390,3 @@ Non sono ancora implementati o completamente verificati:
 - test di durata, gestione completa dei guasti e validazione real-time;
 - hardware certificato per tensioni o correnti industriali.
 
-Questi elementi rappresentano evoluzioni successive e non devono essere confusi con le funzionalità già dimostrate dalle versioni Python e C del proof of concept.

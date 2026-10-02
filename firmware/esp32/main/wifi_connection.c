@@ -36,6 +36,15 @@ static void wifi_event_handler(
 
     if(event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
+
+        const wifi_event_sta_disconnected_t *disconnection_event =
+            (const wifi_event_sta_disconnected_t *)event_data;
+
+        printf(
+            "Wi-Fi disconnesso - codice motivo: %u\n",
+            (unsigned int)disconnection_event->reason
+        );
+
         if(wifi_retry_count < WIFI_MAXIMUM_RETRY)
         {
             wifi_retry_count++;

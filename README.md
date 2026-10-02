@@ -155,6 +155,7 @@ La versione Python del proof of concept implementa attualmente:
 - salvataggio persistente degli eventi in SQLite;
 - stati di consegna `PENDING` e `ACKNOWLEDGED`;
 - gateway simulato con deduplicazione tramite `event_id`;
+- gateway HTTP Flask eseguibile localmente e predisposto per il deployment online, con endpoint diagnostico `GET /health` verificato;
 - sincronizzazione degli eventi dopo una disconnessione;
 - stati operativi `STARTING`, `NORMAL`, `OFFLINE` e `SYNCING`;
 - configurazione della protezione tramite file TOML;
@@ -190,15 +191,22 @@ Sono attualmente implementati e verificati:
 - soglia di sovracorrente impostata a `17 mA` per il carico dimostrativo a LED;
 - ritardo di trip di `2 s`;
 - apertura fisica del relè su `GPIO27` in seguito al trip;
+- timestamp reale dell'evento `PROTECTION_TRIP`, acquisito dal DS3231 al momento dell'apertura;
+- creazione di un evento strutturato `NodeEvent` con sequenza progressiva, timestamp, corrente misurata, soglia e stato dell'interruttore;
+- coda persistente nella NVS interna fino a 16 `NodeEvent`, inseriti inizialmente nello stato `PENDING` senza sovrascrivere quelli già presenti;
+- recupero dopo il riavvio dell'intera coda, dell'ultimo evento e della sequenza progressiva;
+- selezione FIFO del `NodeEvent` `PENDING` più vecchio come prossimo evento da trasmettere;
+- marcatura persistente per sequenza degli eventi consegnati come `ACKNOWLEDGED`, con gestione idempotente degli ACK duplicati;
+- persistenza e ripristino dello stato della protezione (`tripped`) e della posizione del relè, comprese le condizioni `FALSE/OPEN` e `FALSE/CLOSED`;
 - mantenimento dello stato di trip fino a un reset valido;
 - reset e richiusura controllati tramite il pulsante BOOT su `GPIO0`;
 - display OLED 128x64 all'indirizzo I2C `0x3C` con corrente, soglia, stato della protezione e stato del carico;
-- RTC DS3231 all'indirizzo I2C `0x68`, con lettura e scrittura in formato 24 ore;
+- RTC DS3231 all'indirizzo I2C `0x68`, con lettura e scrittura in formato 24 ore e gestione automatica del fuso orario italiano;
 - connessione Wi-Fi in un'attività FreeRTOS separata, senza interrompere il ciclo di protezione;
 - configurazione locale di SSID e password tramite `Kconfig.projbuild`, con `sdkconfig` escluso dal repository;
 - acquisizione automatica dell'indirizzo IP tramite DHCP.
 
-È in corso l'integrazione della sincronizzazione SNTP/NTP: il modulo di acquisizione dell'ora UTC e conversione in `RtcDateTime` è stato creato e compilato correttamente. Rimane da verificare end-to-end la sequenza rete -> ESP32 -> DS3231.
+La sincronizzazione SNTP/NTP è stata verificata end-to-end: dopo aver ottenuto la connessione Wi-Fi, l'ESP32 acquisisce il tempo di rete, applica automaticamente il fuso italiano `CET/CEST`, lo converte in `RtcDateTime` e aggiorna il DS3231 senza interrompere il ciclo di protezione. La futura serializzazione degli eventi continuerà a normalizzare i timestamp nel formato UTC ISO 8601 previsto dall'architettura.
 
 ### Collegamenti principali del prototipo
 
@@ -371,17 +379,21 @@ Da VS Code, con l'estensione ESP-IDF configurata:
 
 Le credenziali Wi-Fi si configurano tramite **ESP-IDF: SDK Configuration Editor (menuconfig)** nella sezione `Resilient Field Node`. Non devono essere scritte nel codice né inserite nel README.
 
-Durante le prove è stato verificato che l'ESP32 continua ad acquisire la corrente e applicare la protezione mentre il Wi-Fi completa in parallelo l'associazione e ottiene un indirizzo IP.
+Durante le prove è stato verificato che l'ESP32 continua ad acquisire la corrente e applicare la protezione mentre il Wi-Fi completa in parallelo l'associazione, ottiene un indirizzo IP e sincronizza il DS3231 tramite NTP con l'ora locale italiana.
+
+È stato inoltre verificato sull'hardware che il superamento continuativo della soglia genera un `NodeEvent`, apre il relè e produce un record diagnostico completo, ad esempio `EVENTO #1: PROTECTION_TRIP` con data, ora, corrente, soglia e stato `OPEN`. Il successivo reset del trip e la richiusura manuale restano due operazioni distinte e controllate.
+
+La coda persistente è stata verificata generando più trip consecutivi: gli eventi sono stati conservati come `PENDING`, il conteggio è aumentato senza perdita o sovrascrittura e, dopo il riavvio dell'ESP32, l'intera coda è stata recuperata. Con gli eventi `#4`, `#5` e `#6` presenti, il firmware ha continuato a indicare correttamente `#4` come prossimo evento da inviare, verificando l'ordinamento FIFO. Anche lo stato `Trip: TRUE` e l'interruttore `OPEN` sono stati ripristinati correttamente.
+
+La gestione dell'acknowledgment è stata verificata marcando l'evento `#4` come `ACKNOWLEDGED`: il conteggio `PENDING` è sceso da tre a due e il prossimo evento selezionato è diventato `#5`. Un secondo ACK per `#4` non ha modificato nuovamente la coda, confermando il comportamento idempotente.
 
 ## Limiti attuali del proof of concept
 
 Non sono ancora implementati o completamente verificati:
 
-- sincronizzazione NTP completa con aggiornamento automatico del DS3231;
-- protocollo applicativo reale per comunicare con il gateway;
+- endpoint `POST /events` e collegamento HTTP reale tra ESP32 e gateway;
 - invio dello snapshot autorevole dello stato;
-- recupero persistente dello stato `TRIPPED` dopo un riavvio;
-- persistenza degli eventi nella memoria dell'ESP32;
+- invio degli eventi `PENDING` e ricezione reale dell'acknowledgment dal gateway, da collegare alla marcatura `ACKNOWLEDGED` già disponibile localmente;
 - evento diagnostico per misura `INVALID` o `STALE`;
 - stato operativo `DEGRADED`;
 - politica di conservazione degli eventi già riconosciuti;

@@ -4,6 +4,6 @@
 #include "esp_err.h"
 #include "rtc_ds3231.h"
 
-esp_err_t network_time_get_utc(RtcDateTime *datetime);
+esp_err_t network_time_get_local(RtcDateTime *datetime);
 
 #endif

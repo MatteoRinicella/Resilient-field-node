@@ -5,6 +5,7 @@ idf_component_register(
         "rtc_ds3231.c"
         "wifi_connection.c"
         "network_time.c"
+        "event_storage.c"
         "../../../c/src/resilient_field_node.c"
     INCLUDE_DIRS
         "."

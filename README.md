@@ -155,7 +155,9 @@ La versione Python del proof of concept implementa attualmente:
 - salvataggio persistente degli eventi in SQLite;
 - stati di consegna `PENDING` e `ACKNOWLEDGED`;
 - gateway simulato con deduplicazione tramite `event_id`;
-- gateway HTTP Flask eseguibile localmente e predisposto per il deployment online, con endpoint diagnostico `GET /health` verificato;
+- gateway HTTP Flask pubblicato su PythonAnywhere e raggiungibile tramite HTTPS, con endpoint diagnostico [`GET /health`](https://mrculino.eu.pythonanywhere.com/health) verificato localmente e dall'esterno;
+- archivio SQLite del gateway predisposto per salvare gli eventi ricevuti e ignorare in modo idempotente le ritrasmissioni con lo stesso `event_id`;
+- endpoint HTTP `POST /events` verificato localmente con autenticazione Bearer fail-closed, validazione del JSON, salvataggio SQLite prima dell'ACK e riconoscimento idempotente dei duplicati;
 - sincronizzazione degli eventi dopo una disconnessione;
 - stati operativi `STARTING`, `NORMAL`, `OFFLINE` e `SYNCING`;
 - configurazione della protezione tramite file TOML;
@@ -391,7 +393,7 @@ La gestione dell'acknowledgment è stata verificata marcando l'evento `#4` come 
 
 Non sono ancora implementati o completamente verificati:
 
-- endpoint `POST /events` e collegamento HTTP reale tra ESP32 e gateway;
+- pubblicazione online protetta di `POST /events` e collegamento HTTP reale tra ESP32 e gateway;
 - invio dello snapshot autorevole dello stato;
 - invio degli eventi `PENDING` e ricezione reale dell'acknowledgment dal gateway, da collegare alla marcatura `ACKNOWLEDGED` già disponibile localmente;
 - evento diagnostico per misura `INVALID` o `STALE`;

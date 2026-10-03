@@ -42,27 +42,29 @@ def health():
     return jsonify(
         {
             "status": "ok",
-            "service": "resilient-field-node-gateway"
+            "service": "resilient-field-node-gateway",
         }
     )
+
 
 @app.post("/events")
 def receive_event():
     if not GATEWAY_API_TOKEN:
         return jsonify(
-            {"error": "gateway_token_not_configured"}
+            {"error": "gateway_token_not_configured"},
         ), 503
+
     authorization_header = request.headers.get(
         "Authorization",
-        ""
+        "",
     )
     expected_authorization = f"Bearer {GATEWAY_API_TOKEN}"
 
     if not secrets.compare_digest(
         authorization_header,
-        expected_authorization
+        expected_authorization,
     ):
-        return jsonify({"error": "unauthorized" }), 401
+        return jsonify({"error": "unauthorized"}), 401
 
     event_data = request.get_json(silent=True)
 

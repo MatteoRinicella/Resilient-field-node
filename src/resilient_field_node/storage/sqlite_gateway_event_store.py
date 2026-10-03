@@ -23,9 +23,9 @@ class SQLiteGatewayEventStore:
         breaker_state: str,
     ) -> bool:
         with closing(sqlite3.connect(self.database_path)) as connection:
-          cursor = connection.execute(
-              """
-              INSERT INTO received_events (
+            cursor = connection.execute(
+                """
+                INSERT INTO received_events (
                     event_id,
                     device_id,
                     boot_id,
@@ -36,11 +36,11 @@ class SQLiteGatewayEventStore:
                     threshold_ma,
                     breaker_state,
                     received_at
-              )
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(event_id) DO NOTHING
-              """,
-              (
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO NOTHING
+                """,
+                (
                     event_id,
                     device_id,
                     boot_id,
@@ -51,9 +51,9 @@ class SQLiteGatewayEventStore:
                     threshold_ma,
                     breaker_state,
                     datetime.now(UTC).isoformat(),
-              ),
-          )
-          connection.commit()
+                ),
+            )
+            connection.commit()
 
         return cursor.rowcount == 1
 

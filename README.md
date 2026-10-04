@@ -157,7 +157,8 @@ La versione Python del proof of concept implementa attualmente:
 - gateway simulato con deduplicazione tramite `event_id`;
 - gateway HTTP Flask pubblicato su PythonAnywhere e raggiungibile tramite HTTPS, con endpoint diagnostico [`GET /health`](https://mrculino.eu.pythonanywhere.com/health) verificato localmente e dall'esterno;
 - archivio SQLite del gateway predisposto per salvare gli eventi ricevuti e ignorare in modo idempotente le ritrasmissioni con lo stesso `event_id`;
-- endpoint HTTP `POST /events` verificato localmente con autenticazione Bearer fail-closed, validazione del JSON, salvataggio SQLite prima dell'ACK e riconoscimento idempotente dei duplicati;
+- endpoint HTTP `POST /events` pubblicato su PythonAnywhere e verificato online con autenticazione Bearer fail-closed, validazione del JSON, salvataggio SQLite prima dell'ACK e riconoscimento idempotente dei duplicati;
+- client HTTPS ESP32 verificato sull'hardware con autenticazione Bearer, validazione del certificato del server, invio FIFO degli eventi `PENDING` e marcatura `ACKNOWLEDGED` soltanto dopo l'ACK del gateway online;
 - sincronizzazione degli eventi dopo una disconnessione;
 - stati operativi `STARTING`, `NORMAL`, `OFFLINE` e `SYNCING`;
 - configurazione della protezione tramite file TOML;
@@ -379,7 +380,7 @@ Da VS Code, con l'estensione ESP-IDF configurata:
 3. usare **Build, Flash and Monitor** per compilare, caricare il firmware e aprire il monitor seriale;
 4. usare `COM4` quando la scheda viene rilevata come convertitore CP210x.
 
-Le credenziali Wi-Fi si configurano tramite **ESP-IDF: SDK Configuration Editor (menuconfig)** nella sezione `Resilient Field Node`. Non devono essere scritte nel codice né inserite nel README.
+Le credenziali Wi-Fi, l'URL del gateway e il token API si configurano tramite **ESP-IDF: SDK Configuration Editor (menuconfig)** nella sezione `Resilient Field Node`. Non devono essere scritti nel codice né inseriti nel README.
 
 Durante le prove è stato verificato che l'ESP32 continua ad acquisire la corrente e applicare la protezione mentre il Wi-Fi completa in parallelo l'associazione, ottiene un indirizzo IP e sincronizza il DS3231 tramite NTP con l'ora locale italiana.
 
@@ -389,13 +390,17 @@ La coda persistente è stata verificata generando più trip consecutivi: gli eve
 
 La gestione dell'acknowledgment è stata verificata marcando l'evento `#4` come `ACKNOWLEDGED`: il conteggio `PENDING` è sceso da tre a due e il prossimo evento selezionato è diventato `#5`. Un secondo ACK per `#4` non ha modificato nuovamente la coda, confermando il comportamento idempotente.
 
+Il collegamento reale ESP32-gateway è stato verificato inviando in ordine FIFO gli eventi persistenti `#5` e `#6` al servizio PythonAnywhere tramite HTTPS. Per ciascun evento il firmware ha validato il certificato del server, ha ricevuto l'ACK applicativo e ha quindi aggiornato la voce NVS da `PENDING` ad `ACKNOWLEDGED`. Il secondo evento è stato trasmesso soltanto dopo il completamento del primo, mentre il ciclo locale di misura e protezione ha continuato a funzionare in parallelo.
+
+Dopo un riavvio hardware la coda è stata recuperata con tre eventi totali e zero eventi `PENDING`; il firmware ha mantenuto la prossima sequenza a `#7` e non ha ritrasmesso `#5` o `#6`, confermando la persistenza degli ACK nella NVS.
+
+La persistenza lato gateway è stata controllata direttamente nel database SQLite online: gli eventi `esp32-80f3da543d4c-event-5` e `esp32-80f3da543d4c-event-6` risultano registrati una sola volta con sequenze `5` e `6`, tipo `PROTECTION_TRIP` e interruttore `OPEN`.
+
 ## Limiti attuali del proof of concept
 
 Non sono ancora implementati o completamente verificati:
 
-- pubblicazione online protetta di `POST /events` e collegamento HTTP reale tra ESP32 e gateway;
 - invio dello snapshot autorevole dello stato;
-- invio degli eventi `PENDING` e ricezione reale dell'acknowledgment dal gateway, da collegare alla marcatura `ACKNOWLEDGED` già disponibile localmente;
 - evento diagnostico per misura `INVALID` o `STALE`;
 - stato operativo `DEGRADED`;
 - politica di conservazione degli eventi già riconosciuti;

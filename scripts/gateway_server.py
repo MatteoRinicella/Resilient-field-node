@@ -10,6 +10,10 @@ from resilient_field_node.storage.sqlite_gateway_event_store import (
     SQLiteGatewayEventStore,
 )
 
+from resilient_field_node.storage.sqlite_gateway_state_store import (
+    SQLiteGatewayStateStore,
+)
+
 GATEWAY_HOST = "0.0.0.0"
 GATEWAY_PORT = 8080
 GATEWAY_API_TOKEN = os.getenv("RFN_GATEWAY_API_TOKEN")
@@ -31,9 +35,22 @@ REQUIRED_EVENT_FIELDS = (
     "breaker_state",
 )
 
+REQUIRED_STATE_FIELDS = (
+    "device_id",
+    "boot_id",
+    "reported_at",
+    "last_event_sequence",
+    "tripped",
+    "breaker_state",
+)
+
 app = Flask(__name__)
 
 gateway_event_store = SQLiteGatewayEventStore(
+    GATEWAY_DATABASE_PATH
+)
+
+gateway_state_store = SQLiteGatewayStateStore(
     GATEWAY_DATABASE_PATH
 )
 
@@ -140,6 +157,95 @@ def receive_event():
             "acknowledged": True,
             "duplicate": not inserted,
             "event_id": event_id,
+        }
+    )
+
+@app.post("/state")
+def receive_state():
+    if not GATEWAY_API_TOKEN:
+        return jsonify(
+            {"error": "gateway_token_not_configured"},
+        ), 503
+
+    authorization_header = request.headers.get(
+        "Authorization",
+        "",
+    )
+    expected_authorization = f"Bearer {GATEWAY_API_TOKEN}"
+
+    if not secrets.compare_digest(
+        authorization_header,
+        expected_authorization,
+    ):
+        return jsonify({"error": "unauthorized"}), 401
+
+    state_data = request.get_json(silent=True)
+
+    if not isinstance(state_data, dict):
+        return jsonify({"error": "invalid_json"}), 400
+
+    missing_fields = [
+        field
+        for field in REQUIRED_STATE_FIELDS
+        if field not in state_data or state_data[field] is None
+    ]
+
+    if missing_fields:
+        return jsonify(
+            {
+                "error": "missing_fields",
+                "fields": missing_fields,
+            }
+        ), 400
+
+    try:
+        device_id = str(state_data["device_id"]).strip()
+        boot_id = str(state_data["boot_id"]).strip()
+        reported_at = datetime.fromisoformat(
+            str(state_data["reported_at"])
+        )
+        last_event_sequence = int(
+            state_data["last_event_sequence"]
+        )
+        tripped = state_data["tripped"]
+        breaker_state = str(
+            state_data["breaker_state"]
+        ).strip()
+
+        if not device_id or not boot_id:
+            raise ValueError
+
+        if reported_at.tzinfo is None:
+            raise ValueError
+
+        if last_event_sequence < 0:
+            raise ValueError
+
+        if not isinstance(tripped, bool):
+            raise ValueError
+
+        if breaker_state not in ("OPEN", "CLOSED"):
+            raise ValueError
+
+        if tripped and breaker_state != "OPEN":
+            raise ValueError
+
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid_state_data"}), 400
+
+    gateway_state_store.save(
+        device_id=device_id,
+        boot_id=boot_id,
+        reported_at=reported_at.isoformat(),
+        last_event_sequence=last_event_sequence,
+        tripped=tripped,
+        breaker_state=breaker_state,
+    )
+
+    return jsonify(
+        {
+            "acknowledged": True,
+            "device_id": device_id,
         }
     )
 

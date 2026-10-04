@@ -157,6 +157,8 @@ La versione Python del proof of concept implementa attualmente:
 - gateway simulato con deduplicazione tramite `event_id`;
 - gateway HTTP Flask pubblicato su PythonAnywhere e raggiungibile tramite HTTPS, con endpoint diagnostico [`GET /health`](https://mrculino.eu.pythonanywhere.com/health) verificato localmente e dall'esterno;
 - archivio SQLite del gateway predisposto per salvare gli eventi ricevuti e ignorare in modo idempotente le ritrasmissioni con lo stesso `event_id`;
+- archivio SQLite separato per lo snapshot dello stato corrente, con una sola riga per dispositivo e aggiornamento atomico tramite `UPSERT`;
+- endpoint HTTP `POST /state` verificato localmente con autenticazione Bearer, validazione dello snapshot e ACK restituito soltanto dopo il salvataggio SQLite;
 - endpoint HTTP `POST /events` pubblicato su PythonAnywhere e verificato online con autenticazione Bearer fail-closed, validazione del JSON, salvataggio SQLite prima dell'ACK e riconoscimento idempotente dei duplicati;
 - client HTTPS ESP32 verificato sull'hardware con autenticazione Bearer, validazione del certificato del server, invio FIFO degli eventi `PENDING` e marcatura `ACKNOWLEDGED` soltanto dopo l'ACK del gateway online;
 - sincronizzazione degli eventi dopo una disconnessione;
@@ -396,11 +398,15 @@ Dopo un riavvio hardware la coda è stata recuperata con tre eventi totali e zer
 
 La persistenza lato gateway è stata controllata direttamente nel database SQLite online: gli eventi `esp32-80f3da543d4c-event-5` e `esp32-80f3da543d4c-event-6` risultano registrati una sola volta con sequenze `5` e `6`, tipo `PROTECTION_TRIP` e interruttore `OPEN`.
 
+È stato inoltre verificato localmente l'archivio dello stato corrente: due snapshot consecutivi dello stesso `device_id` producono una sola riga e il secondo aggiorna correttamente trip, posizione dell'interruttore, sequenza e orari senza modificare lo storico degli eventi.
+
+Il nuovo endpoint `POST /state` è stato verificato attraverso il client di test Flask: un token errato restituisce `401`, due snapshot validi ricevono l'ACK e il secondo aggiorna la riga SQLite del dispositivo da `TRUE/OPEN` a `FALSE/CLOSED`.
+
 ## Limiti attuali del proof of concept
 
 Non sono ancora implementati o completamente verificati:
 
-- invio dello snapshot autorevole dello stato;
+- pubblicazione online e invio ESP32 dello snapshot autorevole dello stato;
 - evento diagnostico per misura `INVALID` o `STALE`;
 - stato operativo `DEGRADED`;
 - politica di conservazione degli eventi già riconosciuti;

@@ -6,6 +6,7 @@ idf_component_register(
         "wifi_connection.c"
         "network_time.c"
         "event_storage.c"
+        "gateway_client.c"
         "../../../c/src/resilient_field_node.c"
     INCLUDE_DIRS
         "."
@@ -17,4 +18,7 @@ idf_component_register(
         esp_event
         esp_netif
         nvs_flash
+        esp_http_client
+        mbedtls
+        esp_hw_support
 )

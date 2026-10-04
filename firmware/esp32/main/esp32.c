@@ -14,7 +14,7 @@
 #include "network_time.h"
 #include "node_event.h"
 #include "event_storage.h"
-
+#include "gateway_client.h"
 #include "wifi_connection.h"
 
 #define RELAY_GPIO GPIO_NUM_27
@@ -23,6 +23,7 @@
 
 #define BOOT_BUTTON_GPIO GPIO_NUM_0
 #define BOOT_BUTTON_PRESSED_LEVEL 0
+#define GATEWAY_SYNC_PERIOD_MS 5000U
 
 #define I2C_SDA_GPIO GPIO_NUM_21
 #define I2C_SCL_GPIO GPIO_NUM_22
@@ -36,6 +37,9 @@
 #define OLED_I2C_ADDRESS_SECONDARY 0x3D
 
 #define DS3231_I2C_ADDRESS 0x68
+
+#define BOOT_BUTTON_GPIO GPIO_NUM_0
+#define BOOT_BUTTON_PRESSED_LEVEL 0
 
 static esp_err_t read_ina219_current_ma(
   i2c_master_dev_handle_t ina219_device,
@@ -132,6 +136,81 @@ static void print_event_queue_status(void)
   }
 }
 
+static void synchronize_next_pending_event(void)
+{
+    NodeEvent pending_event = {0};
+    bool pending_event_found = false;
+
+    esp_err_t result = event_storage_load_next_pending(
+        &pending_event,
+        &pending_event_found
+    );
+
+    if(result != ESP_OK)
+    {
+        printf(
+            "GATEWAY: lettura evento pending fallita: %s\n",
+            esp_err_to_name(result)
+        );
+        return;
+    }
+
+    if(!pending_event_found)
+    {
+        return;
+    }
+
+    printf(
+        "GATEWAY: invio evento #%lu...\n",
+        (unsigned long)pending_event.sequence
+    );
+
+    bool acknowledged = false;
+
+    result = gateway_client_send_event(
+        &pending_event,
+        &acknowledged
+    );
+
+    if(result != ESP_OK)
+    {
+        printf(
+            "GATEWAY: invio evento #%lu fallito: %s\n",
+            (unsigned long)pending_event.sequence,
+            esp_err_to_name(result)
+        );
+        return;
+    }
+
+    if(!acknowledged)
+    {
+        printf(
+            "GATEWAY: evento #%lu senza ACK\n",
+            (unsigned long)pending_event.sequence
+        );
+        return;
+    }
+
+    result = event_storage_acknowledge(
+        pending_event.sequence
+    );
+
+    if(result != ESP_OK)
+    {
+        printf(
+            "GATEWAY: salvataggio ACK evento #%lu fallito: %s\n",
+            (unsigned long)pending_event.sequence,
+            esp_err_to_name(result)
+        );
+        return;
+    }
+
+    printf(
+        "GATEWAY: evento #%lu ACKNOWLEDGED\n",
+        (unsigned long)pending_event.sequence
+    );
+}
+
 static void wifi_connection_task(void *task_argument)
 {
   i2c_master_dev_handle_t rtc_device = (i2c_master_dev_handle_t) task_argument;
@@ -188,8 +267,16 @@ static void wifi_connection_task(void *task_argument)
     printf("TEMPO: errore aggiornamento RTC: %s\n", esp_err_to_name(rtc_set_result));
   }
 
-  vTaskDelete(NULL);
+    while(true)
+  {
+    synchronize_next_pending_event();
+
+    vTaskDelay(
+      pdMS_TO_TICKS(GATEWAY_SYNC_PERIOD_MS)
+    );
+  }
 }
+
 
 void app_main(void)
 {
@@ -597,7 +684,7 @@ void app_main(void)
       const BaseType_t wifi_task_result = xTaskCreate(
         wifi_connection_task,
         "wifi_connection",
-        4096,
+                8192,
         rtc_device,
         5,
         NULL

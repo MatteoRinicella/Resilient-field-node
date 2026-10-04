@@ -8,4 +8,12 @@ menu "Resilient Field Node"
         string "Password rete Wi-Fi"
         default ""
 
+    config RFN_GATEWAY_URL
+        string "URL gateway eventi"
+        default "https://mrculino.eu.pythonanywhere.com/events"
+
+    config RFN_GATEWAY_API_TOKEN
+        string "Token API gateway"
+        default ""
+
 endmenu

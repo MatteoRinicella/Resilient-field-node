@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #define EVENT_STORAGE_NAMESPACE "rfn_events"
 #define EVENT_STORAGE_LATEST_KEY "latest"
@@ -13,6 +15,8 @@
 #define EVENT_STORAGE_QUEUE_KEY "queue"
 #define EVENT_STORAGE_QUEUE_VERSION 1U
 #define EVENT_STORAGE_QUEUE_CAPACITY 16U
+
+static SemaphoreHandle_t event_storage_mutex = NULL;
 
 typedef struct
 {
@@ -27,7 +31,10 @@ esp_err_t event_storage_initialize(void)
 {
     esp_err_t result = nvs_flash_init();
 
-    if(result == ESP_ERR_NVS_NO_FREE_PAGES || result == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    if(
+        result == ESP_ERR_NVS_NO_FREE_PAGES
+        || result == ESP_ERR_NVS_NEW_VERSION_FOUND
+    )
     {
         result = nvs_flash_erase();
 
@@ -39,10 +46,25 @@ esp_err_t event_storage_initialize(void)
         result = nvs_flash_init();
     }
 
-    return result;
+    if(result != ESP_OK)
+    {
+        return result;
+    }
+
+    if(event_storage_mutex == NULL)
+    {
+        event_storage_mutex = xSemaphoreCreateMutex();
+
+        if(event_storage_mutex == NULL)
+        {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    return ESP_OK;
 }
 
-esp_err_t event_storage_save(const NodeEvent *event)
+static esp_err_t event_storage_save_internal(const NodeEvent *event)
 {
     if(event == NULL || event->type != NODE_EVENT_TYPE_PROTECTION_TRIP || event->breaker_state != BREAKER_STATE_OPEN)
     {
@@ -129,6 +151,42 @@ esp_err_t event_storage_save(const NodeEvent *event)
     nvs_close(storage_handle);
 
     return result;
+}
+
+esp_err_t event_storage_save(const NodeEvent *event)
+{
+    if(event_storage_mutex == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if(
+        xSemaphoreTake(
+            event_storage_mutex,
+            portMAX_DELAY
+        ) != pdTRUE
+    )
+    {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    const esp_err_t save_result =
+        event_storage_save_internal(event);
+
+    const BaseType_t give_result =
+        xSemaphoreGive(event_storage_mutex);
+
+    if(save_result != ESP_OK)
+    {
+        return save_result;
+    }
+
+    if(give_result != pdTRUE)
+    {
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
 }
 
 esp_err_t event_storage_load_latest( NodeEvent *event, bool *event_found)
@@ -469,7 +527,7 @@ esp_err_t event_storage_load_next_pending(NodeEvent *event, bool *event_found)
 
 }
 
-esp_err_t event_storage_acknowledge(uint32_t sequence)
+static esp_err_t event_storage_acknowledge_internal(uint32_t sequence)
     {
         if(sequence == 0U)
         {
@@ -566,4 +624,40 @@ esp_err_t event_storage_acknowledge(uint32_t sequence)
     nvs_close(storage_handle);
 
     return result;
+}
+
+esp_err_t event_storage_acknowledge(uint32_t sequence)
+{
+    if(event_storage_mutex == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if(
+        xSemaphoreTake(
+            event_storage_mutex,
+            portMAX_DELAY
+        ) != pdTRUE
+    )
+    {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    const esp_err_t acknowledge_result =
+        event_storage_acknowledge_internal(sequence);
+
+    const BaseType_t give_result =
+        xSemaphoreGive(event_storage_mutex);
+
+    if(acknowledge_result != ESP_OK)
+    {
+        return acknowledge_result;
+    }
+
+    if(give_result != pdTRUE)
+    {
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
 }

@@ -52,6 +52,39 @@ class SQLiteGatewayStateStore:
             )
             connection.commit()
 
+    def load_latest(self) -> dict[str, object] | None:
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+
+            row = connection.execute(
+                """
+                SELECT
+                    device_id,
+                    boot_id,
+                    reported_at,
+                    last_event_sequence,
+                    tripped,
+                    breaker_state,
+                    received_at
+                FROM current_node_state
+                ORDER BY received_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "device_id": row["device_id"],
+            "boot_id": row["boot_id"],
+            "reported_at": row["reported_at"],
+            "last_event_sequence": row["last_event_sequence"],
+            "tripped": bool(row["tripped"]),
+            "breaker_state": row["breaker_state"],
+            "received_at": row["received_at"],
+        }
+
     def _initialize_database(self) -> None:
         self.database_path.parent.mkdir(
             parents=True,

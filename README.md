@@ -207,6 +207,7 @@ Sono attualmente implementati e verificati:
 - persistenza e ripristino dello stato della protezione (`tripped`) e della posizione del relè, comprese le condizioni `FALSE/OPEN` e `FALSE/CLOSED`;
 - mantenimento dello stato di trip fino a un reset valido;
 - reset e richiusura controllati tramite il pulsante BOOT su `GPIO0`;
+- controllo alternativo tramite il monitor seriale USB con i comandi `reset`, `close` e `restart`, utile quando i pulsanti della scheda non sono fisicamente accessibili;
 - display OLED 128x64 all'indirizzo I2C `0x3C` con corrente, soglia, stato della protezione e stato del carico;
 - RTC DS3231 all'indirizzo I2C `0x68`, con lettura e scrittura in formato 24 ore e gestione automatica del fuso orario italiano;
 - connessione Wi-Fi in un'attività FreeRTOS separata, senza interrompere il ciclo di protezione;
@@ -386,6 +387,16 @@ Da VS Code, con l'estensione ESP-IDF configurata:
 
 Le credenziali Wi-Fi, l'URL del gateway e il token API si configurano tramite **ESP-IDF: SDK Configuration Editor (menuconfig)** nella sezione `Resilient Field Node`. Non devono essere scritti nel codice né inseriti nel README.
 
+### Comandi dal monitor seriale USB
+
+Con il monitor seriale ESP-IDF aperto è possibile controllare il nodo senza accedere fisicamente ai pulsanti della scheda. I caratteri digitati potrebbero non essere mostrati dal terminale; il comando viene comunque inviato premendo **Invio**.
+
+- `reset`: azzera un trip valido, ma mantiene il relè aperto;
+- `close`: richiude il relè soltanto quando il trip è disattivato e non è presente una sovracorrente;
+- `restart`: riavvia il firmware via software senza cancellare la memoria NVS.
+
+La sequenza normale dopo un intervento è quindi: rimuovere la causa della sovracorrente, inviare `reset` e poi inviare `close`. Il pulsante BOOT continua a essere supportato come comando locale alternativo.
+
 Durante le prove è stato verificato che l'ESP32 continua ad acquisire la corrente e applicare la protezione mentre il Wi-Fi completa in parallelo l'associazione, ottiene un indirizzo IP e sincronizza il DS3231 tramite NTP con l'ora locale italiana.
 
 È stato inoltre verificato sull'hardware che il superamento continuativo della soglia genera un `NodeEvent`, apre il relè e produce un record diagnostico completo, ad esempio `EVENTO #1: PROTECTION_TRIP` con data, ora, corrente, soglia e stato `OPEN`. Il successivo reset del trip e la richiusura manuale restano due operazioni distinte e controllate.
@@ -413,6 +424,8 @@ La persistenza dello stesso snapshot è stata verificata direttamente nel databa
 La protezione contro gli ACK superati è stata verificata sull'hardware durante cambiamenti reali dello stato. Negli eventi `#9` e `#10` il trip è intervenuto mentre era ancora in corso l'invio dello snapshot precedente `FALSE/CLOSED`: il firmware ha rilevato la differenza dopo l'ACK, ha stampato `stato cambiato durante l'invio`, ha trasmesso prima il nuovo snapshot `TRUE/OPEN` con la sequenza aggiornata e soltanto dopo il relativo ACK ha inviato l'evento `PROTECTION_TRIP`. Anche un reset del trip e una richiusura avvenuti durante una richiesta sono stati rilevati e risincronizzati. Un riavvio intermedio ha inoltre recuperato dalla NVS lo stato persistente `FALSE/OPEN`, l'ultima sequenza `#8` e una coda senza eventi pendenti. Durante le prove successive, fino all'evento `#11`, il ciclo locale di misura è rimasto operativo e il precedente timeout I2C non si è ripresentato.
 
 La verifica conclusiva del database PythonAnywhere ha confermato che gli eventi `#9`, `#10` e `#11` sono presenti una sola volta, tutti come `PROTECTION_TRIP` con interruttore `OPEN` e con i rispettivi timestamp italiani. Lo snapshot corrente del dispositivo riporta correttamente l'ultima sequenza `#11`, trip disattivato e interruttore `CLOSED`, coerentemente con il reset e la richiusura eseguiti al termine della prova.
+
+I comandi seriali USB sono stati verificati sull'hardware con la scheda racchiusa nel contenitore: `reset` ha disattivato il trip mantenendo il relè aperto, `close` ha richiuso il relè dopo la rimozione della condizione di guasto e `restart` ha riavviato correttamente il firmware. Il ciclo di protezione e il bus I2C sono rimasti operativi durante la prova.
 
 ## Limiti attuali del proof of concept
 

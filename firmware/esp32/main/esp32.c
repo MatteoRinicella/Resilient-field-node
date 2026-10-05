@@ -1,12 +1,15 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
+#include "esp_system.h"
 
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 #include "resilient_field_node.h"
 #include "oled_display.h"
@@ -25,6 +28,19 @@
 #define BOOT_BUTTON_PRESSED_LEVEL 0
 #define GATEWAY_SYNC_PERIOD_MS 5000U
 
+#define SERIAL_COMMAND_CAPACITY 16U
+#define SERIAL_COMMAND_QUEUE_LENGTH 4U
+
+typedef enum
+{
+  SERIAL_COMMAND_NONE = 0,
+  SERIAL_COMMAND_RESET_TRIP,
+  SERIAL_COMMAND_CLOSE_BREAKER,
+  SERIAL_COMMAND_RESTART
+} SerialCommand;
+
+static QueueHandle_t serial_command_queue = NULL;
+
 #define I2C_SDA_GPIO GPIO_NUM_21
 #define I2C_SCL_GPIO GPIO_NUM_22
 
@@ -38,8 +54,147 @@
 
 #define DS3231_I2C_ADDRESS 0x68
 
-#define BOOT_BUTTON_GPIO GPIO_NUM_0
-#define BOOT_BUTTON_PRESSED_LEVEL 0
+static void serial_command_task(void *task_argument)
+{
+  (void)task_argument;
+
+  setvbuf(
+    stdin,
+    NULL,
+    _IONBF,
+    0
+  );
+
+  char command_text[SERIAL_COMMAND_CAPACITY] = {0};
+  size_t command_length = 0U;
+  bool command_too_long = false;
+
+  printf(
+    "USB: comandi disponibili: reset, close, restart\n"
+  );
+
+  while(1)
+  {
+    const int received_character = fgetc(stdin);
+
+    if(received_character == EOF)
+    {
+      clearerr(stdin);
+
+      vTaskDelay(pdMS_TO_TICKS(20));
+
+      continue;
+    }
+
+    if(
+      received_character == '\r'
+      || received_character == '\n'
+    )
+    {
+      if(command_too_long)
+      {
+        printf("USB: comando troppo lungo\n");
+
+        command_too_long = false;
+        command_length = 0U;
+        command_text[0] = '\0';
+
+        continue;
+      }
+
+      if(command_length == 0U)
+      {
+        continue;
+      }
+
+      command_text[command_length] = '\0';
+
+      SerialCommand command = SERIAL_COMMAND_NONE;
+
+      if(strcmp(command_text, "reset") == 0)
+      {
+        command = SERIAL_COMMAND_RESET_TRIP;
+      }
+      else if(strcmp(command_text, "close") == 0)
+      {
+        command = SERIAL_COMMAND_CLOSE_BREAKER;
+      }
+      else if(strcmp(command_text, "restart") == 0)
+      {
+        command = SERIAL_COMMAND_RESTART;
+      }
+      else
+      {
+        printf(
+          "USB: comando sconosciuto: %s\n",
+          command_text
+        );
+      }
+
+      if(command != SERIAL_COMMAND_NONE)
+      {
+        if(
+          xQueueSend(
+            serial_command_queue,
+            &command,
+            pdMS_TO_TICKS(100)
+          ) != pdPASS
+        )
+        {
+          printf(
+            "USB: coda piena, comando non acquisito\n"
+          );
+        }
+        else
+        {
+          printf(
+            "USB: comando acquisito: %s\n",
+            command_text
+          );
+        }
+      }
+
+      command_length = 0U;
+      command_text[0] = '\0';
+
+      continue;
+    }
+
+    if(
+      received_character == '\b'
+      || received_character == 127
+    )
+    {
+      if(command_length > 0U)
+      {
+        command_length--;
+        command_text[command_length] = '\0';
+      }
+
+      continue;
+    }
+
+    if(command_too_long)
+    {
+      continue;
+    }
+
+    if(
+      command_length
+      < SERIAL_COMMAND_CAPACITY - 1U
+    )
+    {
+      command_text[command_length] =
+        (char)received_character;
+
+      command_length++;
+    }
+    else
+    {
+      command_too_long = true;
+    }
+  }
+}
 
 static esp_err_t read_ina219_current_ma(
   i2c_master_dev_handle_t ina219_device,
@@ -885,10 +1040,43 @@ void app_main(void)
       double overcurrent_duration_s = 0.0;
 
       bool previous_boot_button_pressed = false;
-      
+
       unsigned int cycle_number = 1;
 
       printf("Protezione: soglia %.1f mA - ritardo %.1f s\n", threshold_a * 1000.0, trip_delay_s);
+
+      serial_command_queue = xQueueCreate(
+        SERIAL_COMMAND_QUEUE_LENGTH,
+        sizeof(SerialCommand)
+      );
+
+      if(serial_command_queue == NULL)
+      {
+        printf(
+          "USB: impossibile creare la coda dei comandi\n"
+        );
+      }
+      else
+      {
+        const BaseType_t serial_task_result = xTaskCreate(
+          serial_command_task,
+          "serial_command",
+          4096,
+          NULL,
+          5,
+          NULL
+        );
+
+        if(serial_task_result != pdPASS)
+        {
+          printf(
+            "USB: impossibile avviare l'attivita' comandi\n"
+          );
+
+          vQueueDelete(serial_command_queue);
+          serial_command_queue = NULL;
+        }
+      }
 
       const BaseType_t wifi_task_result = xTaskCreate(
         wifi_connection_task,
@@ -1064,11 +1252,60 @@ void app_main(void)
           }
         }
 
-        const bool boot_button_pressed = gpio_get_level(BOOT_BUTTON_GPIO) == BOOT_BUTTON_PRESSED_LEVEL;
+        const bool boot_button_pressed =
+          gpio_get_level(BOOT_BUTTON_GPIO)
+          == BOOT_BUTTON_PRESSED_LEVEL;
 
-        if(boot_button_pressed && !previous_boot_button_pressed)
+        const bool boot_button_activated =
+          boot_button_pressed
+          && !previous_boot_button_pressed;
+
+        SerialCommand serial_command = SERIAL_COMMAND_NONE;
+        bool serial_command_received = false;
+
+        if(serial_command_queue != NULL)
         {
-                    if(tripped && !overcurrent)
+          serial_command_received =
+            xQueueReceive(
+              serial_command_queue,
+              &serial_command,
+              0
+            ) == pdTRUE;
+        }
+
+        if(
+          serial_command_received
+          && serial_command == SERIAL_COMMAND_RESTART
+        )
+        {
+          printf("USB: riavvio software richiesto\n");
+
+          vTaskDelay(pdMS_TO_TICKS(100));
+
+          esp_restart();
+        }
+
+        const bool reset_trip_requested =
+          (boot_button_activated && tripped)
+          || (
+            serial_command_received
+            && serial_command == SERIAL_COMMAND_RESET_TRIP
+          );
+
+        const bool close_breaker_requested =
+          (
+            boot_button_activated
+            && !tripped
+            && breaker_state == BREAKER_STATE_OPEN
+          )
+          || (
+            serial_command_received
+            && serial_command == SERIAL_COMMAND_CLOSE_BREAKER
+          );
+
+        if(reset_trip_requested)
+        {
+          if(tripped && !overcurrent)
           {
             const esp_err_t reset_state_save_result =
               event_storage_save_protection_state(
@@ -1096,8 +1333,23 @@ void app_main(void)
               );
             }
           }
-          else if(!tripped &&
-                  breaker_state == BREAKER_STATE_OPEN)
+          else
+          {
+            printf(
+              "COMANDO MANUALE: reset rifiutato - "
+              "Trip: %s - Sovracorrente: %s\n",
+              bool_to_string(tripped),
+              bool_to_string(overcurrent)
+            );
+          }
+        }
+        else if(close_breaker_requested)
+        {
+          if(
+            !tripped
+            && !overcurrent
+            && breaker_state == BREAKER_STATE_OPEN
+          )
           {
             const esp_err_t close_state_save_result =
               event_storage_save_protection_state(
@@ -1128,6 +1380,17 @@ void app_main(void)
                 esp_err_to_name(close_state_save_result)
               );
             }
+          }
+          else
+          {
+            printf(
+              "COMANDO MANUALE: richiusura rifiutata - "
+              "Trip: %s - Sovracorrente: %s - "
+              "Interruttore: %s\n",
+              bool_to_string(tripped),
+              bool_to_string(overcurrent),
+              breaker_state_to_string(breaker_state)
+            );
           }
         }
 

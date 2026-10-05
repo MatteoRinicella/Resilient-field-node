@@ -158,6 +158,7 @@ La versione Python del proof of concept implementa attualmente:
 - gateway HTTP Flask pubblicato su PythonAnywhere e raggiungibile tramite HTTPS, con endpoint diagnostico [`GET /health`](https://mrculino.eu.pythonanywhere.com/health) verificato localmente e dall'esterno;
 - archivio SQLite del gateway predisposto per salvare gli eventi ricevuti e ignorare in modo idempotente le ritrasmissioni con lo stesso `event_id`;
 - archivio SQLite separato per lo snapshot dello stato corrente, con una sola riga per dispositivo e aggiornamento atomico tramite `UPSERT`;
+- metodi di lettura SQLite per recuperare lo stato più recente e un numero configurabile di eventi recenti, usati dal visualizzatore da terminale;
 - endpoint HTTP `POST /state` verificato localmente con autenticazione Bearer, validazione dello snapshot e ACK restituito soltanto dopo il salvataggio SQLite;
 - endpoint HTTP `POST /events` pubblicato su PythonAnywhere e verificato online con autenticazione Bearer fail-closed, validazione del JSON, salvataggio SQLite prima dell'ACK e riconoscimento idempotente dei duplicati;
 - client HTTPS ESP32 verificato sull'hardware con autenticazione Bearer, validazione del certificato del server, invio FIFO degli eventi `PENDING` e marcatura `ACKNOWLEDGED` soltanto dopo l'ACK del gateway online;
@@ -374,6 +375,22 @@ gcc -I ".\c\include" ".\c\src\main.c" ".\c\src\resilient_field_node.c" -Wall -We
 
 In VS Code è sufficiente aprire `c/src/main.c` e premere il tasto Play. La simulazione mostra misure con qualità differenti, sovracorrente temporizzata, trip, apertura dell'interruttore, tentativi di reset non sicuri e richiusura controllata.
 
+## Visualizzazione dei dati del gateway da terminale
+
+Lo stato corrente e gli ultimi dieci eventi ricevuti dal gateway possono essere mostrati senza interrogare manualmente SQLite:
+
+```bash
+python scripts/show_gateway_data.py
+```
+
+Per aggiornare automaticamente la visualizzazione ogni cinque secondi durante una dimostrazione:
+
+```bash
+python scripts/show_gateway_data.py --watch
+```
+
+La modalità continua si interrompe con `Ctrl+C`. Il visualizzatore mostra identificativo del dispositivo, stato della protezione, posizione dell'interruttore, ultima sequenza e storico dei trip con corrente, soglia e orario. I timestamp restano completi nel database ma vengono presentati senza il suffisso del fuso orario.
+
 ## Compilazione e caricamento del firmware ESP32
 
 Il progetto ESP-IDF si trova in `firmware/esp32` ed è configurato per il target `esp32`.
@@ -426,6 +443,8 @@ La protezione contro gli ACK superati è stata verificata sull'hardware durante 
 La verifica conclusiva del database PythonAnywhere ha confermato che gli eventi `#9`, `#10` e `#11` sono presenti una sola volta, tutti come `PROTECTION_TRIP` con interruttore `OPEN` e con i rispettivi timestamp italiani. Lo snapshot corrente del dispositivo riporta correttamente l'ultima sequenza `#11`, trip disattivato e interruttore `CLOSED`, coerentemente con il reset e la richiusura eseguiti al termine della prova.
 
 I comandi seriali USB sono stati verificati sull'hardware con la scheda racchiusa nel contenitore: `reset` ha disattivato il trip mantenendo il relè aperto, `close` ha richiuso il relè dopo la rimozione della condizione di guasto e `restart` ha riavviato correttamente il firmware. Il ciclo di protezione e il bus I2C sono rimasti operativi durante la prova.
+
+La base dati del visualizzatore da terminale è stata verificata con test dedicati: lo store dello stato restituisce lo snapshot più recente, mentre lo store degli eventi restituisce lo storico in ordine dal più recente e applica correttamente il limite richiesto. Il comando normale e la modalità continua `--watch` sono stati provati localmente; la suite completa comprende 18 test superati.
 
 ## Limiti attuali del proof of concept
 

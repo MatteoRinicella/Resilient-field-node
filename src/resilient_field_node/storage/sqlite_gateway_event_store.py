@@ -57,6 +57,58 @@ class SQLiteGatewayEventStore:
 
         return cursor.rowcount == 1
 
+    def load_recent(
+        self,
+        limit: int = 10,
+    ) -> list[dict[str, object]]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+
+            rows = connection.execute(
+                """
+                SELECT
+                    event_id,
+                    device_id,
+                    boot_id,
+                    sequence,
+                    event_type,
+                    occurred_at,
+                    measured_current_ma,
+                    threshold_ma,
+                    breaker_state,
+                    received_at
+                FROM received_events
+                ORDER BY received_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        events: list[dict[str, object]] = []
+
+        for row in rows:
+            events.append(
+                {
+                    "event_id": row["event_id"],
+                    "device_id": row["device_id"],
+                    "boot_id": row["boot_id"],
+                    "sequence": row["sequence"],
+                    "event_type": row["event_type"],
+                    "occurred_at": row["occurred_at"],
+                    "measured_current_ma": row[
+                        "measured_current_ma"
+                    ],
+                    "threshold_ma": row["threshold_ma"],
+                    "breaker_state": row["breaker_state"],
+                    "received_at": row["received_at"],
+                }
+            )
+
+        return events
+
     def _initialize_database(self) -> None:
         self.database_path.parent.mkdir(
             parents=True,

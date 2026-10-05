@@ -391,6 +391,15 @@ python scripts/show_gateway_data.py --watch
 
 La modalità continua si interrompe con `Ctrl+C`. Il visualizzatore mostra identificativo del dispositivo, stato della protezione, posizione dell'interruttore, ultima sequenza e storico dei trip con corrente, soglia e orario. I timestamp restano completi nel database ma vengono presentati senza il suffisso del fuso orario.
 
+Su PythonAnywhere è possibile definire nel file `~/.bashrc` due alias permanenti:
+
+```bash
+alias rfn='$HOME/.virtualenvs/rfn-gateway/bin/python $HOME/Resilient-field-node/scripts/show_gateway_data.py'
+alias rfn-watch='$HOME/.virtualenvs/rfn-gateway/bin/python $HOME/Resilient-field-node/scripts/show_gateway_data.py --watch'
+```
+
+`rfn` è l'abbreviazione di **Resilient Field Node** e mostra una singola lettura; `rfn-watch` aggiorna continuamente la stessa visualizzazione.
+
 ## Compilazione e caricamento del firmware ESP32
 
 Il progetto ESP-IDF si trova in `firmware/esp32` ed è configurato per il target `esp32`.
@@ -444,7 +453,7 @@ La verifica conclusiva del database PythonAnywhere ha confermato che gli eventi 
 
 I comandi seriali USB sono stati verificati sull'hardware con la scheda racchiusa nel contenitore: `reset` ha disattivato il trip mantenendo il relè aperto, `close` ha richiuso il relè dopo la rimozione della condizione di guasto e `restart` ha riavviato correttamente il firmware. Il ciclo di protezione e il bus I2C sono rimasti operativi durante la prova.
 
-La base dati del visualizzatore da terminale è stata verificata con test dedicati: lo store dello stato restituisce lo snapshot più recente, mentre lo store degli eventi restituisce lo storico in ordine dal più recente e applica correttamente il limite richiesto. Il comando normale e la modalità continua `--watch` sono stati provati localmente; la suite completa comprende 18 test superati.
+La base dati del visualizzatore da terminale è stata verificata con test dedicati: lo store dello stato restituisce lo snapshot più recente, mentre lo store degli eventi restituisce lo storico in ordine dal più recente e applica correttamente il limite richiesto. Il comando normale e la modalità continua `--watch` sono stati provati localmente; la suite completa comprende 18 test superati. La prova conclusiva su PythonAnywhere ha mostrato correttamente lo stato `TRIP ATTIVO/OPEN` alla sequenza `#19` e gli ultimi dieci eventi reali ordinati dal più recente; anche gli alias `rfn` e `rfn-watch` sono stati verificati nella console online.
 
 ## Limiti attuali del proof of concept
 

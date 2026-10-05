@@ -26,6 +26,66 @@ typedef struct
     QueuedNodeEvent entries[ EVENT_STORAGE_QUEUE_CAPACITY];
 } StoredEventQueue;
 
+static esp_err_t event_storage_compact_acknowledged(
+    StoredEventQueue *queue
+)
+{
+    if(queue == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if(
+        queue->version != EVENT_STORAGE_QUEUE_VERSION
+        || queue->count > EVENT_STORAGE_QUEUE_CAPACITY
+    )
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint32_t destination_index = 0U;
+
+    for(
+        uint32_t source_index = 0U;
+        source_index < queue->count;
+        source_index++
+    )
+    {
+        const NodeEventDeliveryState delivery_state =
+            queue->entries[source_index].delivery_state;
+
+        if(delivery_state == NODE_EVENT_DELIVERY_PENDING)
+        {
+            if(destination_index != source_index)
+            {
+                queue->entries[destination_index] =
+                    queue->entries[source_index];
+            }
+
+            destination_index++;
+        }
+        else if(
+            delivery_state
+            != NODE_EVENT_DELIVERY_ACKNOWLEDGED
+        )
+        {
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+
+    for(
+        uint32_t index = destination_index;
+        index < EVENT_STORAGE_QUEUE_CAPACITY;
+        index++
+    )
+    {
+        queue->entries[index] = (QueuedNodeEvent){0};
+    }
+
+    queue->count = destination_index;
+
+    return ESP_OK;
+}
 
 esp_err_t event_storage_initialize(void)
 {
@@ -108,6 +168,16 @@ static esp_err_t event_storage_save_internal(const NodeEvent *event)
     {
         nvs_close(storage_handle);
         return ESP_ERR_INVALID_STATE;
+    }
+
+    result = event_storage_compact_acknowledged(
+        &queue
+    );
+
+    if(result != ESP_OK)
+    {
+        nvs_close(storage_handle);
+        return result;
     }
 
     if(queue.count >= EVENT_STORAGE_QUEUE_CAPACITY)

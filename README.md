@@ -54,7 +54,7 @@ Questa funzione non dipende dal gateway perché, durante una perdita della comun
 
 Il nodo salva ogni evento in una memoria persistente locale prima di tentare la trasmissione.
 
-L'evento rimane nella coda di trasmissione con stato `PENDING` finché il gateway non conferma di averlo registrato mediante un acknowledgment (`ACK`). Dopo la conferma, l'evento viene marcato come `ACKNOWLEDGED` e può essere eliminato in futuro secondo una politica di conservazione.
+L'evento rimane nella coda di trasmissione con stato `PENDING` finché il gateway non conferma di averlo registrato mediante un acknowledgment (`ACK`). Dopo la conferma, l'evento viene marcato come `ACKNOWLEDGED`; prima del salvataggio di un nuovo evento, le voci già riconosciute vengono eliminate per recuperare spazio senza perdere gli eventi ancora da consegnare.
 
 Gli eventi ancora `PENDING` non devono mai essere eliminati o sovrascritti per liberare spazio.
 
@@ -205,6 +205,7 @@ Sono attualmente implementati e verificati:
 - recupero dopo il riavvio dell'intera coda, dell'ultimo evento e della sequenza progressiva;
 - selezione FIFO del `NodeEvent` `PENDING` più vecchio come prossimo evento da trasmettere;
 - marcatura persistente per sequenza degli eventi consegnati come `ACKNOWLEDGED`, con gestione idempotente degli ACK duplicati;
+- compattazione automatica della coda prima di un nuovo salvataggio, eliminando soltanto gli eventi `ACKNOWLEDGED` e mantenendo in ordine tutti i `PENDING`;
 - persistenza e ripristino dello stato della protezione (`tripped`) e della posizione del relè, comprese le condizioni `FALSE/OPEN` e `FALSE/CLOSED`;
 - mantenimento dello stato di trip fino a un reset valido;
 - reset e richiusura controllati tramite il pulsante BOOT su `GPIO0`;
@@ -455,13 +456,14 @@ I comandi seriali USB sono stati verificati sull'hardware con la scheda racchius
 
 La base dati del visualizzatore da terminale è stata verificata con test dedicati: lo store dello stato restituisce lo snapshot più recente, mentre lo store degli eventi restituisce lo storico in ordine dal più recente e applica correttamente il limite richiesto. Il comando normale e la modalità continua `--watch` sono stati provati localmente; la suite completa comprende 18 test superati. La prova conclusiva su PythonAnywhere ha mostrato correttamente lo stato `TRIP ATTIVO/OPEN` alla sequenza `#19` e gli ultimi dieci eventi reali ordinati dal più recente; anche gli alias `rfn` e `rfn-watch` sono stati verificati nella console online.
 
+La saturazione della coda NVS è stata riprodotta dopo 16 eventi: il trip e l'apertura fail-safe restavano operativi, ma il nuovo evento veniva rifiutato con `ESP_ERR_NO_MEM` perché anche le voci `ACKNOWLEDGED` occupavano gli slot. La correzione compatta la coda prima dell'inserimento e incrementa la sequenza soltanto dopo un salvataggio riuscito. La prova hardware successiva ha salvato l'evento `#20`, ridotto la coda da 16 elementi a un solo `PENDING`, ricevuto l'ACK del gateway e mostrato l'evento nel visualizzatore online.
+
 ## Limiti attuali del proof of concept
 
 Non sono ancora implementati o completamente verificati:
 
 - evento diagnostico per misura `INVALID` o `STALE`;
 - stato operativo `DEGRADED`;
-- politica di conservazione degli eventi già riconosciuti;
 - integrazione del modulo Ethernet W5500;
 - calibrazione metrologica dell'INA219;
 - test di durata, gestione completa dei guasti e validazione real-time;

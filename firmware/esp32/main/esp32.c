@@ -1180,8 +1180,6 @@ void app_main(void)
             .breaker_state = breaker_state
           };
 
-          next_event_sequence++;
-
           if(rtc_device != NULL)
           {
             const esp_err_t trip_time_result = ds3231_read_datetime(rtc_device, &trip_event.occurred_at);
@@ -1202,6 +1200,8 @@ void app_main(void)
 
           if(event_save_result == ESP_OK)
           {
+            next_event_sequence++;
+
             printf(
               "MEMORIA: evento #%lu salvato nella NVS\n",
               (unsigned long)trip_event.sequence

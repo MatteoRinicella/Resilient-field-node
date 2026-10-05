@@ -136,6 +136,202 @@ static void print_event_queue_status(void)
   }
 }
 
+static esp_err_t load_current_gateway_state(
+    i2c_master_dev_handle_t rtc_device,
+    GatewayNodeState *state
+)
+{
+    if(rtc_device == NULL || state == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    bool tripped = false;
+    BreakerState breaker_state = BREAKER_STATE_OPEN;
+    bool protection_state_found = false;
+
+    esp_err_t result = event_storage_load_protection_state(
+        &tripped,
+        &breaker_state,
+        &protection_state_found
+    );
+
+    if(result != ESP_OK)
+    {
+        return result;
+    }
+
+    if(!protection_state_found)
+    {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    NodeEvent latest_event = {0};
+    bool latest_event_found = false;
+
+    result = event_storage_load_latest(
+        &latest_event,
+        &latest_event_found
+    );
+
+    if(result != ESP_OK)
+    {
+        return result;
+    }
+
+    RtcDateTime current_datetime = {0};
+
+    result = ds3231_read_datetime(
+        rtc_device,
+        &current_datetime
+    );
+
+    if(result != ESP_OK)
+    {
+        return result;
+    }
+
+    *state = (GatewayNodeState)
+    {
+        .reported_at = current_datetime,
+        .last_event_sequence =
+            latest_event_found
+            ? latest_event.sequence
+            : 0U,
+        .tripped = tripped,
+        .breaker_state = breaker_state
+    };
+
+    return ESP_OK;
+}
+
+static bool gateway_states_match(
+    const GatewayNodeState *first,
+    const GatewayNodeState *second
+)
+{
+    if(first == NULL || second == NULL)
+    {
+        return false;
+    }
+
+    return
+        first->last_event_sequence
+            == second->last_event_sequence
+        && first->tripped == second->tripped
+        && first->breaker_state == second->breaker_state;
+}
+
+static bool synchronize_current_state_if_needed(
+    i2c_master_dev_handle_t rtc_device,
+    GatewayNodeState *acknowledged_state,
+    bool *has_acknowledged_state
+)
+{
+    if(
+        rtc_device == NULL
+        || acknowledged_state == NULL
+        || has_acknowledged_state == NULL
+    )
+    {
+        return false;
+    }
+
+    GatewayNodeState current_state = {0};
+
+    esp_err_t result = load_current_gateway_state(
+        rtc_device,
+        &current_state
+    );
+
+    if(result != ESP_OK)
+    {
+        printf(
+            "GATEWAY: lettura stato corrente fallita: %s\n",
+            esp_err_to_name(result)
+        );
+        return false;
+    }
+
+    if(
+        *has_acknowledged_state
+        && gateway_states_match(
+            acknowledged_state,
+            &current_state
+        )
+    )
+    {
+        return true;
+    }
+
+    *has_acknowledged_state = false;
+
+    printf(
+        "GATEWAY: invio stato corrente - "
+        "sequenza #%lu - Trip: %s - Interruttore: %s...\n",
+        (unsigned long)current_state.last_event_sequence,
+        bool_to_string(current_state.tripped),
+        breaker_state_to_string(current_state.breaker_state)
+    );
+
+    bool acknowledged = false;
+
+    result = gateway_client_send_state(
+        &current_state,
+        &acknowledged
+    );
+
+    if(result != ESP_OK)
+    {
+        printf(
+            "GATEWAY: invio stato corrente fallito: %s\n",
+            esp_err_to_name(result)
+        );
+        return false;
+    }
+
+    if(!acknowledged)
+    {
+        printf("GATEWAY: stato corrente senza ACK\n");
+        return false;
+    }
+
+        GatewayNodeState state_after_ack = {0};
+
+    result = load_current_gateway_state(
+        rtc_device,
+        &state_after_ack
+    );
+
+    if(result != ESP_OK)
+    {
+        printf(
+            "GATEWAY: rilettura stato dopo ACK fallita: %s\n",
+            esp_err_to_name(result)
+        );
+        return false;
+    }
+
+    if(!gateway_states_match(
+        &current_state,
+        &state_after_ack
+    ))
+    {
+        printf(
+            "GATEWAY: stato cambiato durante l'invio, "
+            "nuova sincronizzazione necessaria\n"
+        );
+        return false;
+    }
+
+    *acknowledged_state = current_state;
+    *has_acknowledged_state = true;
+
+    printf("GATEWAY: stato corrente ACKNOWLEDGED\n");
+
+    return true;
+}
+
 static void synchronize_next_pending_event(void)
 {
     NodeEvent pending_event = {0};
@@ -267,9 +463,22 @@ static void wifi_connection_task(void *task_argument)
     printf("TEMPO: errore aggiornamento RTC: %s\n", esp_err_to_name(rtc_set_result));
   }
 
+  GatewayNodeState acknowledged_state = {0};
+  bool has_acknowledged_state = false;
+
     while(true)
   {
-    synchronize_next_pending_event();
+      const bool state_is_synchronized =
+      synchronize_current_state_if_needed(
+        rtc_device,
+        &acknowledged_state,
+        &has_acknowledged_state
+      );
+
+    if(state_is_synchronized)
+    {
+      synchronize_next_pending_event();
+    }
 
     vTaskDelay(
       pdMS_TO_TICKS(GATEWAY_SYNC_PERIOD_MS)
@@ -751,6 +960,26 @@ void app_main(void)
               RELAY_INACTIVE_LEVEL
             )
           );
+
+          const esp_err_t trip_state_save_result =
+          event_storage_save_protection_state(
+              tripped,
+              breaker_state
+            );
+
+          if(trip_state_save_result != ESP_OK)
+          {
+            printf(
+              "MEMORIA: salvataggio stato di trip fallito: %s\n",
+              esp_err_to_name(trip_state_save_result)
+            );
+          }
+          else
+          {
+            printf(
+              "MEMORIA: stato di trip TRUE/OPEN salvato nella NVS\n"
+            );
+          }
 
           NodeEvent trip_event =
           {

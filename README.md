@@ -161,6 +161,8 @@ La versione Python del proof of concept implementa attualmente:
 - endpoint HTTP `POST /state` verificato localmente con autenticazione Bearer, validazione dello snapshot e ACK restituito soltanto dopo il salvataggio SQLite;
 - endpoint HTTP `POST /events` pubblicato su PythonAnywhere e verificato online con autenticazione Bearer fail-closed, validazione del JSON, salvataggio SQLite prima dell'ACK e riconoscimento idempotente dei duplicati;
 - client HTTPS ESP32 verificato sull'hardware con autenticazione Bearer, validazione del certificato del server, invio FIFO degli eventi `PENDING` e marcatura `ACKNOWLEDGED` soltanto dopo l'ACK del gateway online;
+- snapshot autorevole ESP32 inviato a `POST /state` prima degli eventi arretrati e ritrasmesso soltanto quando cambiano trip, interruttore o ultima sequenza;
+- verifica dello stato dopo ogni ACK dello snapshot, così un cambiamento avvenuto durante la richiesta HTTPS invalida l'ACK ormai superato e forza una nuova sincronizzazione prima dell'invio degli eventi;
 - sincronizzazione degli eventi dopo una disconnessione;
 - stati operativi `STARTING`, `NORMAL`, `OFFLINE` e `SYNCING`;
 - configurazione della protezione tramite file TOML;
@@ -402,11 +404,20 @@ La persistenza lato gateway è stata controllata direttamente nel database SQLit
 
 Il nuovo endpoint `POST /state` è stato verificato attraverso il client di test Flask: un token errato restituisce `401`, due snapshot validi ricevono l'ACK e il secondo aggiorna la riga SQLite del dispositivo da `TRUE/OPEN` a `FALSE/CLOSED`.
 
+La stessa operazione è stata verificata sul gateway pubblico PythonAnywhere: due richieste HTTPS per `manual-state-test` hanno prodotto una sola riga, aggiornata al secondo snapshot con `boot_id` `test-boot-002`, sequenza `7`, trip attivo e interruttore `OPEN`.
+
+L'invio reale dello snapshot è stato verificato sull'ESP32: dopo Wi-Fi e sincronizzazione NTP il nodo ha trasmesso la sequenza `#6` con trip `FALSE` e interruttore `CLOSED`, ha validato il certificato PythonAnywhere e ha ricevuto `ACKNOWLEDGED`. Nei cicli successivi lo snapshot non è stato ritrasmesso perché lo stato non era cambiato, mentre l'acquisizione della corrente ha continuato a funzionare durante la richiesta HTTPS.
+
+La persistenza dello stesso snapshot è stata verificata direttamente nel database online: il record del dispositivo `esp32-80f3da543d4c` contiene il `boot_id` reale dell'avvio, timestamp italiano con offset `+02:00`, ultima sequenza `6`, trip `0` e interruttore `CLOSED`.
+
+La protezione contro gli ACK superati è stata verificata sull'hardware durante cambiamenti reali dello stato. Negli eventi `#9` e `#10` il trip è intervenuto mentre era ancora in corso l'invio dello snapshot precedente `FALSE/CLOSED`: il firmware ha rilevato la differenza dopo l'ACK, ha stampato `stato cambiato durante l'invio`, ha trasmesso prima il nuovo snapshot `TRUE/OPEN` con la sequenza aggiornata e soltanto dopo il relativo ACK ha inviato l'evento `PROTECTION_TRIP`. Anche un reset del trip e una richiusura avvenuti durante una richiesta sono stati rilevati e risincronizzati. Un riavvio intermedio ha inoltre recuperato dalla NVS lo stato persistente `FALSE/OPEN`, l'ultima sequenza `#8` e una coda senza eventi pendenti. Durante le prove successive, fino all'evento `#11`, il ciclo locale di misura è rimasto operativo e il precedente timeout I2C non si è ripresentato.
+
+La verifica conclusiva del database PythonAnywhere ha confermato che gli eventi `#9`, `#10` e `#11` sono presenti una sola volta, tutti come `PROTECTION_TRIP` con interruttore `OPEN` e con i rispettivi timestamp italiani. Lo snapshot corrente del dispositivo riporta correttamente l'ultima sequenza `#11`, trip disattivato e interruttore `CLOSED`, coerentemente con il reset e la richiusura eseguiti al termine della prova.
+
 ## Limiti attuali del proof of concept
 
 Non sono ancora implementati o completamente verificati:
 
-- pubblicazione online e invio ESP32 dello snapshot autorevole dello stato;
 - evento diagnostico per misura `INVALID` o `STALE`;
 - stato operativo `DEGRADED`;
 - politica di conservazione degli eventi già riconosciuti;

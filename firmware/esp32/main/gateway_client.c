@@ -302,12 +302,106 @@ static esp_err_t gateway_build_event_json(
     return ESP_OK;
 }
 
-esp_err_t gateway_client_send_event(
-    const NodeEvent *event,
+static esp_err_t gateway_build_state_json(
+    const GatewayNodeState *state,
+    char *json,
+    size_t json_capacity
+)
+{
+    if(
+        state == NULL
+        || json == NULL
+        || json_capacity == 0U
+    )
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if(
+        (
+            state->breaker_state != BREAKER_STATE_OPEN
+            && state->breaker_state != BREAKER_STATE_CLOSED
+        )
+        || (
+            state->tripped
+            && state->breaker_state != BREAKER_STATE_OPEN
+        )
+    )
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char timestamp[GATEWAY_TIMESTAMP_CAPACITY] = {0};
+
+    esp_err_t result = gateway_format_timestamp(
+        &state->reported_at,
+        timestamp,
+        sizeof(timestamp)
+    );
+
+    if(result != ESP_OK)
+    {
+        return result;
+    }
+
+    result = gateway_initialize_identity();
+
+    if(result != ESP_OK)
+    {
+        return result;
+    }
+
+    const char *breaker_state_text =
+        state->breaker_state == BREAKER_STATE_OPEN
+        ? "OPEN"
+        : "CLOSED";
+
+    const char *tripped_text =
+        state->tripped
+        ? "true"
+        : "false";
+
+    const int json_length = snprintf(
+        json,
+        json_capacity,
+        "{"
+        "\"device_id\":\"%s\","
+        "\"boot_id\":\"%s\","
+        "\"reported_at\":\"%s\","
+        "\"last_event_sequence\":%lu,"
+        "\"tripped\":%s,"
+        "\"breaker_state\":\"%s\""
+        "}",
+        gateway_device_id,
+        gateway_boot_id,
+        timestamp,
+        (unsigned long)state->last_event_sequence,
+        tripped_text,
+        breaker_state_text
+    );
+
+    if(
+        json_length < 0
+        || (size_t)json_length >= json_capacity
+    )
+    {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t gateway_send_json(
+    const char *url,
+    const char *json,
     bool *acknowledged
 )
 {
-    if(event == NULL || acknowledged == NULL)
+    if(
+        url == NULL
+        || json == NULL
+        || acknowledged == NULL
+    )
     {
         return ESP_ERR_INVALID_ARG;
     }
@@ -315,24 +409,11 @@ esp_err_t gateway_client_send_event(
     *acknowledged = false;
 
     if(
-        CONFIG_RFN_GATEWAY_URL[0] == '\0'
+        url[0] == '\0'
         || CONFIG_RFN_GATEWAY_API_TOKEN[0] == '\0'
     )
     {
         return ESP_ERR_INVALID_STATE;
-    }
-
-    char json[GATEWAY_JSON_CAPACITY] = {0};
-
-    esp_err_t result = gateway_build_event_json(
-        event,
-        json,
-        sizeof(json)
-    );
-
-    if(result != ESP_OK)
-    {
-        return result;
     }
 
     char authorization[GATEWAY_AUTHORIZATION_CAPACITY] = {0};
@@ -356,7 +437,7 @@ esp_err_t gateway_client_send_event(
 
     const esp_http_client_config_t configuration =
     {
-        .url = CONFIG_RFN_GATEWAY_URL,
+        .url = url,
         .method = HTTP_METHOD_POST,
         .timeout_ms = GATEWAY_HTTP_TIMEOUT_MS,
         .event_handler = gateway_http_event_handler,
@@ -372,48 +453,42 @@ esp_err_t gateway_client_send_event(
         return ESP_ERR_NO_MEM;
     }
 
-    result = esp_http_client_set_header(
+    esp_err_t result = esp_http_client_set_header(
         client,
         "Content-Type",
         "application/json"
     );
 
-    if(result != ESP_OK)
+    if(result == ESP_OK)
     {
-        esp_http_client_cleanup(client);
-        return result;
+        result = esp_http_client_set_header(
+            client,
+            "Authorization",
+            authorization
+        );
     }
 
-    result = esp_http_client_set_header(
-        client,
-        "Authorization",
-        authorization
-    );
-
-    if(result != ESP_OK)
+    if(result == ESP_OK)
     {
-        esp_http_client_cleanup(client);
-        return result;
+        result = esp_http_client_set_post_field(
+            client,
+            json,
+            (int)strlen(json)
+        );
     }
 
-    result = esp_http_client_set_post_field(
-        client,
-        json,
-        (int)strlen(json)
-    );
+    int status_code = 0;
 
-    if(result != ESP_OK)
+    if(result == ESP_OK)
     {
-        esp_http_client_cleanup(client);
-        return result;
+        result = esp_http_client_perform(client);
+
+        if(result == ESP_OK)
+        {
+            status_code =
+                esp_http_client_get_status_code(client);
+        }
     }
-
-    result = esp_http_client_perform(client);
-
-    const int status_code =
-        result == ESP_OK
-        ? esp_http_client_get_status_code(client)
-        : 0;
 
     const esp_err_t cleanup_result =
         esp_http_client_cleanup(client);
@@ -453,4 +528,68 @@ esp_err_t gateway_client_send_event(
     *acknowledged = compact_ack || spaced_ack;
 
     return *acknowledged ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t gateway_client_send_event(
+    const NodeEvent *event,
+    bool *acknowledged
+)
+{
+    if(event == NULL || acknowledged == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *acknowledged = false;
+
+    char json[GATEWAY_JSON_CAPACITY] = {0};
+
+    const esp_err_t result = gateway_build_event_json(
+        event,
+        json,
+        sizeof(json)
+    );
+
+    if(result != ESP_OK)
+    {
+        return result;
+    }
+
+    return gateway_send_json(
+        CONFIG_RFN_GATEWAY_URL,
+        json,
+        acknowledged
+    );
+}
+
+esp_err_t gateway_client_send_state(
+    const GatewayNodeState *state,
+    bool *acknowledged
+)
+{
+    if(state == NULL || acknowledged == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *acknowledged = false;
+
+    char json[GATEWAY_JSON_CAPACITY] = {0};
+
+    const esp_err_t result = gateway_build_state_json(
+        state,
+        json,
+        sizeof(json)
+    );
+
+    if(result != ESP_OK)
+    {
+        return result;
+    }
+
+    return gateway_send_json(
+        CONFIG_RFN_GATEWAY_STATE_URL,
+        json,
+        acknowledged
+    );
 }

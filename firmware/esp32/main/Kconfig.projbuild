@@ -12,6 +12,10 @@ menu "Resilient Field Node"
         string "URL gateway eventi"
         default "https://mrculino.eu.pythonanywhere.com/events"
 
+    config RFN_GATEWAY_STATE_URL
+        string "URL gateway stato corrente"
+        default "https://mrculino.eu.pythonanywhere.com/state"
+
     config RFN_GATEWAY_API_TOKEN
         string "Token API gateway"
         default ""

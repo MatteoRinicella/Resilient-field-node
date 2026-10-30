@@ -5,8 +5,24 @@
 </p>
 
 <p align="center">
-  Nodo di campo basato su ESP32 con misura reale della corrente, protezione locale fail-safe, relè, OLED, RTC e connettività resiliente.
+  Nodo di campo basato su ESP32 con misura reale della corrente, protezione locale fail-safe, persistenza degli eventi e sincronizzazione resiliente con un gateway Python online.
 </p>
+
+## Stato del progetto
+
+Il proof of concept è completo e verificato end-to-end: dal sensore e dal relè reali fino al gateway Flask pubblicato su PythonAnywhere e al database SQLite.
+
+| Area | Stato finale |
+|---|---|
+| Modello e simulazione Python | Implementati, `18/18` test superati |
+| Logica di protezione C | Implementata e verificata |
+| Firmware ESP32 | Implementato e provato sull'hardware reale |
+| Persistenza locale NVS | Implementata, compresa la gestione della coda piena |
+| Sincronizzazione HTTPS | Verificata con il gateway pubblico |
+| Gateway Flask e SQLite | Online e verificato |
+| Visualizzazione da terminale | Disponibile con `rfn` e `rfn-watch` |
+
+> Il progetto è un dimostratore a bassa tensione. Non è un dispositivo certificato per la rete elettrica o per impieghi industriali.
 
 ## Prototipo
 
@@ -28,282 +44,197 @@
   </a>
 </p>
 
-## Obiettivo della prima milestone
+## Obiettivo
 
-Realizzare un MVP software eseguibile su PC che simuli un nodo di campo capace di acquisire misure, applicare una protezione locale e conservare gli eventi anche quando il gateway non è disponibile.
+Il nodo deve:
 
-Quando la comunicazione ritorna, il nodo deve sincronizzare gli eventi senza perderli o registrarli due volte. Lo stato fisico più recente del nodo deve prevalere sulle informazioni obsolete conservate dal gateway.
+1. acquisire una misura reale di corrente;
+2. riconoscere una sovracorrente persistente;
+3. aprire localmente il relè senza dipendere dalla rete;
+4. conservare stato ed eventi anche in caso di riavvio;
+5. continuare a operare quando il gateway non è raggiungibile;
+6. sincronizzare stato ed eventi quando la comunicazione ritorna;
+7. evitare duplicati anche dopo una ritrasmissione.
 
-## Primo scenario verificabile
+La protezione locale appartiene al percorso critico. Wi-Fi e gateway forniscono supervisione e persistenza remota, ma un loro guasto non impedisce l'apertura del relè.
 
-1. Il nodo e il gateway funzionano normalmente.
-2. La comunicazione con il gateway viene interrotta.
-3. Viene simulata una sovracorrente.
-4. Il nodo apre localmente l'interruttore simulato.
-5. L'evento di trip viene conservato sul nodo.
-6. La comunicazione viene ripristinata.
-7. Il gateway riceve l'evento una sola volta e aggiorna lo stato corrente.
+## Architettura
 
-## Prima decisione progettuale
+```mermaid
+flowchart LR
+    INA[INA219<br/>misura corrente] --> ESP[ESP32<br/>protezione locale]
+    RTC[DS3231<br/>timestamp offline] --> ESP
+    ESP --> OLED[OLED<br/>stato locale]
+    ESP --> RELAY[Relè<br/>apertura carico]
+    ESP --> NVS[NVS<br/>stato e coda eventi]
+    ESP -- HTTPS + JSON --> API[Gateway Flask<br/>PythonAnywhere]
+    API --> EVENTS[(SQLite<br/>storico eventi)]
+    API --> STATE[(SQLite<br/>stato corrente)]
+    EVENTS --> VIEW[rfn / rfn-watch]
+    STATE --> VIEW
+```
 
-La protezione contro la sovracorrente viene eseguita dal nodo di campo.
+### Flusso di un trip
 
-Questa funzione non dipende dal gateway perché, durante una perdita della comunicazione, il nodo deve poter rilevare il guasto e aprire localmente l'interruttore simulato. Il gateway riceverà e conserverà l'evento quando la comunicazione sarà disponibile.
+```text
+Misura > soglia per 2 s
+        ↓
+Trip della protezione
+        ↓
+Apertura locale del relè
+        ↓
+Salvataggio NVS come PENDING
+        ↓
+Invio HTTPS quando la rete è disponibile
+        ↓
+Salvataggio SQLite e ACK del gateway
+        ↓
+Evento marcato ACKNOWLEDGED nella NVS
+```
 
-## Seconda decisione progettuale
+## Decisioni progettuali principali
 
-Il nodo salva ogni evento in una memoria persistente locale prima di tentare la trasmissione.
+### Protezione locale e fail-safe
 
-L'evento rimane nella coda di trasmissione con stato `PENDING` finché il gateway non conferma di averlo registrato mediante un acknowledgment (`ACK`). Dopo la conferma, l'evento viene marcato come `ACKNOWLEDGED`; prima del salvataggio di un nuovo evento, le voci già riconosciute vengono eliminate per recuperare spazio senza perdere gli eventi ancora da consegnare.
+- Il relè parte `OPEN` e viene chiuso soltanto dopo la verifica dell'INA219.
+- Una sovracorrente deve durare almeno `2 s` prima del trip.
+- Il trip resta memorizzato fino a un reset valido.
+- Reset del trip e richiusura del relè sono due operazioni separate.
+- Un riavvio non equivale a un reset: lo stato viene recuperato dalla NVS.
+- Una misura `INVALID` o `STALE` non viene usata per decidere una sovracorrente e impedisce una richiusura non sicura.
 
-Gli eventi ancora `PENDING` non devono mai essere eliminati o sovrascritti per liberare spazio.
+### Persistenza prima della trasmissione
 
-## Terza decisione progettuale
+Ogni evento viene scritto nella memoria NVS prima di essere inviato. La coda contiene fino a 16 eventi e usa due stati di consegna:
 
-Ogni evento riceve un `event_id` univoco nel momento in cui viene creato. Gli eventuali tentativi di ritrasmissione mantengono lo stesso `event_id`.
+- `PENDING`: ancora da confermare;
+- `ACKNOWLEDGED`: registrato dal gateway.
 
-Il gateway usa `event_id` per riconoscere gli eventi già registrati: un duplicato non produce un secondo record, ma il gateway restituisce comunque l'ACK affinché il nodo possa completare la sincronizzazione.
+Prima di un nuovo inserimento la coda elimina soltanto gli eventi già `ACKNOWLEDGED`. Gli eventi `PENDING` non vengono sovrascritti per liberare spazio. La sequenza avanza soltanto dopo un salvataggio riuscito.
 
-## Quarta decisione progettuale
+### Consegna idempotente
 
-A ogni avvio il nodo genera un nuovo `boot_id` univoco. Il campo `sequence` è un contatore progressivo che ordina gli eventi prodotti durante quello specifico avvio e può ripartire da 1 dopo un riavvio.
+Il gateway usa `event_id` come chiave primaria. Se lo stesso evento viene ritrasmesso perché il primo ACK è andato perso, SQLite non crea una seconda riga ma il gateway restituisce nuovamente l'ACK.
 
-La combinazione `device_id`, `boot_id` e `sequence` permette di distinguere e ordinare gli eventi anche quando il contatore riparte. `event_id` continua invece a essere la chiave usata per la deduplicazione.
+La combinazione `device_id`, `boot_id` e `sequence` è inoltre vincolata come identità logica dell'evento.
 
-## Quinta decisione progettuale
+### Stato corrente separato dallo storico
 
-Ogni evento distingue tre momenti:
+- `POST /state` aggiorna una sola riga per dispositivo tramite `UPSERT`;
+- `POST /events` conserva lo storico dei trip senza sovrascriverlo.
 
-- `occurred_at`: quando il fatto è avvenuto sul nodo;
-- `recorded_at`: quando il nodo ha registrato localmente l'evento;
-- `received_at`: quando il gateway ha ricevuto l'evento.
+Alla riconnessione il nodo invia prima lo snapshot autorevole dello stato corrente e poi gli eventi arretrati. Se lo stato cambia mentre una richiesta è in corso, l'ACK del vecchio snapshot viene riconosciuto come superato e il nuovo stato viene ritrasmesso.
 
-Una trasmissione ritardata non modifica `occurred_at`. I timestamp vengono rappresentati in UTC usando il formato ISO 8601.
-
-## Sesta decisione progettuale
-
-Alla riconnessione il nodo invia prima uno snapshot autorevole del proprio stato fisico attuale e soltanto dopo trasmette gli eventi arretrati.
-
-Lo snapshot risponde alla domanda "qual è lo stato adesso?", mentre lo storico risponde alla domanda "che cosa è accaduto?". Gli eventi storici non devono sovrascrivere uno stato corrente più recente.
-
-## Settima decisione progettuale
-
-Durante una disconnessione continuano a funzionare sul nodo:
-
-- acquisizione dei sensori;
-- protezione locale;
-- comando dell'interruttore simulato;
-- persistenza locale degli eventi.
-
-Il gateway perde temporaneamente la visibilità aggiornata e il telecontrollo, ma non appartiene al percorso critico della protezione.
-
-## Ottava decisione progettuale
-
-La connettività e la sincronizzazione del nodo sono descritte inizialmente da tre stati:
-
-- `NORMAL`: gateway raggiungibile e sincronizzazione completata;
-- `OFFLINE`: gateway non raggiungibile, con funzioni locali ancora operative;
-- `SYNCING`: collegamento ripristinato, ma snapshot ed eventi arretrati non ancora completamente riconciliati.
-
-Le transizioni principali sono `NORMAL -> OFFLINE` alla perdita della comunicazione, `OFFLINE -> SYNCING` al ripristino e `SYNCING -> NORMAL` soltanto dopo la conferma di snapshot ed eventi. Una nuova perdita di comunicazione provoca `SYNCING -> OFFLINE`.
-
-## Nona decisione progettuale
-
-Subito dopo ogni avvio il nodo entra in `STARTING`. In questa fase recupera stato operativo ed eventi persistenti, genera un nuovo `boot_id`, inizializza `sequence`, registra l'avvio e verifica il collegamento con il gateway.
-
-Un riavvio non equivale a un reset della protezione: se il nodo recupera uno stato `TRIPPED`, oppure non riesce a determinare in modo affidabile lo stato precedente, l'interruttore simulato rimane `OPEN`. Da `STARTING` il nodo passa a `OFFLINE` se il gateway non è raggiungibile, altrimenti entra in `SYNCING` prima di poter diventare `NORMAL`.
-
-## Decima decisione progettuale
-
-Il nodo rappresenta separatamente tre dimensioni:
-
-- stato operativo e di comunicazione: `STARTING`, `NORMAL`, `OFFLINE`, `SYNCING`;
-- stato della protezione: `ARMED`, `TRIPPED`;
-- stato fisico dell'interruttore: `OPEN`, `CLOSED`.
-
-Questa separazione permette, per esempio, di rappresentare contemporaneamente `OFFLINE + TRIPPED + OPEN`. La combinazione `TRIPPED + CLOSED` non è consentita.
-
-## Undicesima decisione progettuale
-
-Ogni misura contiene un valore e una qualità:
-
-- `VALID`: misura recente, disponibile e nei limiti previsti;
-- `SUSPECT`: misura disponibile ma non pienamente affidabile;
-- `INVALID`: misura assente, impossibile o non utilizzabile;
-- `STALE`: ultima misura disponibile non aggiornata entro il timeout.
-
-Con il gateway raggiungibile, una misura necessaria non `VALID` porta il nodo in `DEGRADED`. Se la comunicazione è assente, lo stato operativo rimane `OFFLINE`, mentre la qualità resta associata alla singola misura.
-
-## Dodicesima decisione progettuale
-
-Se la misura di corrente è `INVALID` o `STALE`, il nodo entra in funzionamento degradato ma non apre automaticamente un interruttore già `CLOSED`. Mantiene la posizione esistente, registra un evento di anomalia del sensore e non usa il valore inaffidabile per valutare una sovracorrente.
-
-Finché la misura di corrente non torna `VALID`, un comando `CLOSE_BREAKER` viene rifiutato. Questa è una politica esplicita del proof of concept e non rappresenta una regola universale per sistemi di protezione reali.
-
-## Funzionalità implementate nella versione Python
-
-La versione Python del proof of concept implementa attualmente:
-
-- misure di corrente con tempo, valore e qualità;
-- qualità `VALID`, `SUSPECT`, `INVALID` e `STALE`;
-- protezione di sovracorrente con soglia e ritardo configurabili;
-- memoria persistente del trip durante l'esecuzione;
-- apertura locale dell'interruttore simulato;
-- reset controllato della protezione;
-- blocco della richiusura con trip attivo o misura non valida;
-- generazione di eventi con `event_id`, `boot_id` e `sequence`;
-- salvataggio persistente degli eventi in SQLite;
-- stati di consegna `PENDING` e `ACKNOWLEDGED`;
-- gateway simulato con deduplicazione tramite `event_id`;
-- gateway HTTP Flask pubblicato su PythonAnywhere e raggiungibile tramite HTTPS, con endpoint diagnostico [`GET /health`](https://mrculino.eu.pythonanywhere.com/health) verificato localmente e dall'esterno;
-- archivio SQLite del gateway predisposto per salvare gli eventi ricevuti e ignorare in modo idempotente le ritrasmissioni con lo stesso `event_id`;
-- archivio SQLite separato per lo snapshot dello stato corrente, con una sola riga per dispositivo e aggiornamento atomico tramite `UPSERT`;
-- metodi di lettura SQLite per recuperare lo stato più recente e un numero configurabile di eventi recenti, usati dal visualizzatore da terminale;
-- endpoint HTTP `POST /state` verificato localmente con autenticazione Bearer, validazione dello snapshot e ACK restituito soltanto dopo il salvataggio SQLite;
-- endpoint HTTP `POST /events` pubblicato su PythonAnywhere e verificato online con autenticazione Bearer fail-closed, validazione del JSON, salvataggio SQLite prima dell'ACK e riconoscimento idempotente dei duplicati;
-- client HTTPS ESP32 verificato sull'hardware con autenticazione Bearer, validazione del certificato del server, invio FIFO degli eventi `PENDING` e marcatura `ACKNOWLEDGED` soltanto dopo l'ACK del gateway online;
-- snapshot autorevole ESP32 inviato a `POST /state` prima degli eventi arretrati e ritrasmesso soltanto quando cambiano trip, interruttore o ultima sequenza;
-- verifica dello stato dopo ogni ACK dello snapshot, così un cambiamento avvenuto durante la richiesta HTTPS invalida l'ACK ormai superato e forza una nuova sincronizzazione prima dell'invio degli eventi;
-- sincronizzazione degli eventi dopo una disconnessione;
-- stati operativi `STARTING`, `NORMAL`, `OFFLINE` e `SYNCING`;
-- configurazione della protezione tramite file TOML;
-- test unitari e di integrazione eseguibili insieme.
-
-## Funzionalità implementate nella versione C
-
-La versione C riproduce la logica locale destinata a essere portata in futuro su un dispositivo embedded:
-
-- misura di corrente rappresentata da una `struct` con tempo, valore e qualità;
-- qualità `VALID`, `SUSPECT`, `INVALID` e `STALE` rappresentate tramite `enum`;
-- rilevazione della sovracorrente con soglia configurabile;
-- ritardo temporale prima del trip;
-- interruzione del conteggio in presenza di misure `INVALID` o `STALE`;
-- memoria del trip fino a un reset valido;
-- apertura dell'interruttore simulato in seguito al trip;
-- reset consentito solo con misura `VALID` e corrente sotto soglia;
-- richiusura negata con trip attivo o misura non `VALID`;
-- separazione tra interfaccia pubblica `.h`, implementazione `.c` e simulazione;
-- test automatici delle regole principali tramite `assert`.
-
-La versione C non replica database, gateway e sincronizzazione: queste funzioni restano nella simulazione Python. Il codice C dimostra invece la logica locale essenziale che non deve dipendere dalla disponibilità della rete.
-
-## Firmware ESP32 e prototipo hardware
-
-La logica C è stata portata su un ESP32 classico usando ESP-IDF 6.1. Il firmware esegue la protezione locale su hardware reale e mantiene il percorso critico indipendente dalla rete.
-
-Sono attualmente implementati e verificati:
-
-- avvio fail-safe con relè inizialmente aperto;
-- chiusura del relè soltanto dopo la verifica del sensore INA219;
-- misura reale della corrente tramite INA219 all'indirizzo I2C `0x40`;
-- soglia di sovracorrente impostata a `17 mA` per il carico dimostrativo a LED;
-- ritardo di trip di `2 s`;
-- apertura fisica del relè su `GPIO27` in seguito al trip;
-- timestamp reale dell'evento `PROTECTION_TRIP`, acquisito dal DS3231 al momento dell'apertura;
-- creazione di un evento strutturato `NodeEvent` con sequenza progressiva, timestamp, corrente misurata, soglia e stato dell'interruttore;
-- coda persistente nella NVS interna fino a 16 `NodeEvent`, inseriti inizialmente nello stato `PENDING` senza sovrascrivere quelli già presenti;
-- recupero dopo il riavvio dell'intera coda, dell'ultimo evento e della sequenza progressiva;
-- selezione FIFO del `NodeEvent` `PENDING` più vecchio come prossimo evento da trasmettere;
-- marcatura persistente per sequenza degli eventi consegnati come `ACKNOWLEDGED`, con gestione idempotente degli ACK duplicati;
-- compattazione automatica della coda prima di un nuovo salvataggio, eliminando soltanto gli eventi `ACKNOWLEDGED` e mantenendo in ordine tutti i `PENDING`;
-- persistenza e ripristino dello stato della protezione (`tripped`) e della posizione del relè, comprese le condizioni `FALSE/OPEN` e `FALSE/CLOSED`;
-- mantenimento dello stato di trip fino a un reset valido;
-- reset e richiusura controllati tramite il pulsante BOOT su `GPIO0`;
-- controllo alternativo tramite il monitor seriale USB con i comandi `reset`, `close` e `restart`, utile quando i pulsanti della scheda non sono fisicamente accessibili;
-- display OLED 128x64 all'indirizzo I2C `0x3C` con corrente, soglia, stato della protezione e stato del carico;
-- RTC DS3231 all'indirizzo I2C `0x68`, con lettura e scrittura in formato 24 ore e gestione automatica del fuso orario italiano;
-- connessione Wi-Fi in un'attività FreeRTOS separata, senza interrompere il ciclo di protezione;
-- configurazione locale di SSID e password tramite `Kconfig.projbuild`, con `sdkconfig` escluso dal repository;
-- acquisizione automatica dell'indirizzo IP tramite DHCP.
-
-La sincronizzazione SNTP/NTP è stata verificata end-to-end: dopo aver ottenuto la connessione Wi-Fi, l'ESP32 acquisisce il tempo di rete, applica automaticamente il fuso italiano `CET/CEST`, lo converte in `RtcDateTime` e aggiorna il DS3231 senza interrompere il ciclo di protezione. La futura serializzazione degli eventi continuerà a normalizzare i timestamp nel formato UTC ISO 8601 previsto dall'architettura.
-
-### Collegamenti principali del prototipo
+## Hardware
 
 | Componente | Collegamento ESP32 | Funzione |
 |---|---|---|
 | Relè 5 V | `GPIO27` | Apertura e chiusura del carico |
-| Pulsante BOOT | `GPIO0` | Reset del trip e richiusura controllata |
+| Pulsante BOOT | `GPIO0` | Comando locale di reset/richiusura |
 | Bus I2C SDA | `GPIO21` | Dati per INA219, OLED e DS3231 |
 | Bus I2C SCL | `GPIO22` | Clock per INA219, OLED e DS3231 |
-| INA219 | I2C `0x40` | Misura della corrente del carico |
-| OLED 128x64 | I2C `0x3C` | Interfaccia locale del nodo |
-| DS3231 | I2C `0x68` | Orologio hardware per i timestamp offline |
+| INA219 | I2C `0x40` | Misura della corrente |
+| OLED 128x64 | I2C `0x3C` | Corrente, soglia, trip e stato carico |
+| DS3231 | I2C `0x68` | Timestamp disponibili anche offline |
 
-Il carico dimostrativo usa LED a bassa tensione e resistenze dedicate. Il prototipo non è progettato per essere collegato direttamente alla rete elettrica o a carichi industriali.
+Il carico dimostrativo a LED usa una soglia di `17 mA`. Il relè viene aperto quando la corrente resta oltre soglia per `2 s`.
 
-## Coerenza tra Python e C
+## Firmware ESP32
 
-Le due implementazioni usano le stesse regole fondamentali:
+Il firmware usa ESP-IDF 6.1 e implementa:
 
-| Regola | Python | C |
-|---|---|---|
-| Sovracorrente | corrente `> soglia` | corrente `> soglia` |
-| Ritardo del trip | durata `>= ritardo` | durata `>= ritardo` |
-| Qualità utilizzabili dalla protezione | `VALID`, `SUSPECT` | `VALID`, `SUSPECT` |
-| Reset | trip attivo, misura `VALID`, corrente sotto soglia | stesse condizioni |
-| Richiusura | trip assente e misura `VALID` | stesse condizioni |
+- acquisizione reale dall'INA219;
+- protezione di sovracorrente indipendente dalla rete;
+- comando fisico del relè;
+- display OLED e RTC DS3231 sullo stesso bus I2C;
+- sincronizzazione NTP con gestione automatica `CET/CEST`;
+- timestamp ISO 8601 con offset;
+- persistenza di trip, relè, sequenza e coda eventi nella NVS;
+- ordinamento FIFO degli eventi `PENDING`;
+- gestione idempotente degli ACK duplicati;
+- compattazione degli eventi già confermati;
+- attività Wi-Fi/HTTPS separata dal ciclo di protezione;
+- autenticazione Bearer e validazione del certificato HTTPS;
+- snapshot dello stato inviato prima dello storico;
+- controllo seriale USB quando i pulsanti della scheda non sono accessibili.
 
-## Struttura principale
+### Comandi seriali USB
+
+Con il monitor ESP-IDF aperto:
+
+- `reset`: rimuove un trip valido e lascia il relè aperto;
+- `close`: richiude soltanto con trip disattivato e corrente sicura;
+- `restart`: riavvia il firmware senza cancellare la NVS.
+
+La sequenza normale dopo un intervento è: rimuovere la sovracorrente, inviare `reset`, quindi inviare `close`.
+
+## Software Python
+
+La parte Python è organizzata in livelli distinti:
+
+| Modulo | Responsabilità |
+|---|---|
+| `domain/` | Misure, qualità, protezione, breaker, eventi e stati operativi |
+| `node.py` | Coordinamento tra protezione, interruttore e persistenza |
+| `synchronization.py` | Invio degli eventi pendenti e applicazione degli ACK |
+| `gateway.py` | Gateway simulato per test deterministici offline/online |
+| `sqlite_event_store.py` | Persistenza SQLite del nodo simulato |
+| `gateway_server.py` | API HTTP Flask pubblicata online |
+| `sqlite_gateway_event_store.py` | Storico idempotente degli eventi ricevuti |
+| `sqlite_gateway_state_store.py` | Ultimo snapshot di ogni dispositivo |
+| `show_gateway_data.py` | Visualizzazione dello stato e degli eventi da terminale |
+
+La simulazione Python usa una soglia configurabile nel file `config/node.toml`; il valore di `17 mA` appartiene invece alla configurazione del prototipo hardware.
+
+## Gateway online
+
+Il gateway Flask è pubblicato su PythonAnywhere:
+
+- [`GET /health`](https://mrculino.eu.pythonanywhere.com/health): verifica diagnostica del servizio;
+- `POST /state`: ricezione dello snapshot corrente;
+- `POST /events`: ricezione idempotente degli eventi.
+
+Le richieste `POST` richiedono un token Bearer. Il server:
+
+1. rifiuta le richieste se il token non è configurato;
+2. confronta l'header con `secrets.compare_digest`;
+3. valida JSON, tipi, timestamp e invarianti di dominio;
+4. usa query SQL parametrizzate;
+5. completa il commit SQLite prima di restituire l'ACK;
+6. restituisce `duplicate: true` quando l'evento era già presente.
+
+Il database è conservato fuori dal repository in:
 
 ```text
-config/
-    node.toml
-
-scripts/
-    measurement_example.py
-    run_all_tests.py
-
-src/resilient_field_node/
-    configuration.py
-    gateway.py
-    node.py
-    synchronization.py
-
-    domain/
-        breaker.py
-        event.py
-        measurement.py
-        measurement_quality.py
-        operational_state.py
-        protection.py
-
-    storage/
-        sqlite_event_store.py
-
-tests/
-    unit/
-    integration/
-
-c/
-    include/
-        resilient_field_node.h
-    src/
-        main.c
-        resilient_field_node.c
-    tests/
-        test_resilient_field_node.c
-    build/
-
-firmware/esp32/
-    CMakeLists.txt
-
-    main/
-        Kconfig.projbuild
-        esp32.c
-        oled_display.c
-        oled_display.h
-        rtc_ds3231.c
-        rtc_ds3231.h
-        wifi_connection.c
-        wifi_connection.h
-        network_time.c
-        network_time.h
+~/.resilient-field-node/gateway-events.sqlite3
 ```
 
-## Preparazione dell'ambiente
+Contiene due tabelle principali:
 
-Dalla cartella principale del progetto:
+- `received_events`: storico append-only dei trip;
+- `current_node_state`: ultimo stato noto, una riga per `device_id`.
+
+## Visualizzazione da terminale
+
+Dalla directory del progetto:
+
+```bash
+python scripts/show_gateway_data.py
+python scripts/show_gateway_data.py --watch
+```
+
+Su PythonAnywhere sono disponibili gli alias:
+
+```bash
+rfn
+rfn-watch
+```
+
+`rfn` mostra una singola lettura. `rfn-watch` aggiorna ogni cinque secondi stato della protezione, posizione del relè, ultima sequenza e ultimi dieci eventi. Si interrompe con `Ctrl+C`.
+
+## Installazione Python
+
+Requisiti: Python 3.12 o successivo.
 
 ```powershell
 python -m venv .venv
@@ -311,161 +242,135 @@ python -m venv .venv
 python -m pip install --editable .
 ```
 
-## Esecuzione dei test Python
+### Test automatici
 
 ```powershell
 python .\scripts\run_all_tests.py
 ```
 
-Risultato atteso:
+Risultato verificato:
 
 ```text
-Test superati: 16 / 16
+Test superati: 18 / 18
 Tutti i test sono stati superati
 ```
 
-## Esecuzione dei test C
+La suite comprende test unitari e di integrazione per soglia, ritardo, qualità della misura, trip, reset, richiusura, persistenza SQLite, deduplicazione e sincronizzazione dopo una disconnessione.
 
-Con GCC disponibile, dalla cartella principale del progetto:
+### Simulazione completa
+
+```powershell
+python .\scripts\measurement_example.py
+```
+
+La simulazione mostra gateway offline, trip locale, persistenza dell'evento, riconnessione, sincronizzazione, ACK, reset e richiusura controllata.
+
+## Test e simulazione C
 
 ```powershell
 gcc -I ".\c\include" ".\c\tests\test_resilient_field_node.c" ".\c\src\resilient_field_node.c" -Wall -Wextra -std=c11 -o ".\c\build\test_resilient_field_node.exe"
 .\c\build\test_resilient_field_node.exe
 ```
 
-Risultato atteso:
-
-```text
-Test soglia: OK
-Test ritardo trip: OK
-Test qualita misura: OK
-Test reset protezione: OK
-Test richiusura interruttore: OK
-Tutti i test C sono stati superati
-```
-
-In VS Code è possibile ottenere lo stesso risultato aprendo `c/tests/test_resilient_field_node.c` e premendo il tasto Play.
-
-## Esecuzione della simulazione Python
-
-```powershell
-python .\scripts\measurement_example.py
-```
-
-La simulazione dimostra:
-
-1. avvio del nodo con gateway offline;
-2. acquisizione di misure valide;
-3. rilevazione di una sovracorrente persistente;
-4. apertura locale dell'interruttore;
-5. salvataggio persistente dell'evento;
-6. mancata consegna durante la disconnessione;
-7. passaggio a `SYNCING` alla riconnessione;
-8. consegna dell'evento e ricezione dell'ACK;
-9. ritorno allo stato `NORMAL`;
-10. reset manuale e richiusura controllata.
-
-## Esecuzione della simulazione C
-
-Da terminale:
+Per eseguire la simulazione C:
 
 ```powershell
 gcc -I ".\c\include" ".\c\src\main.c" ".\c\src\resilient_field_node.c" -Wall -Wextra -std=c11 -o ".\c\build\main.exe"
 .\c\build\main.exe
 ```
 
-In VS Code è sufficiente aprire `c/src/main.c` e premere il tasto Play. La simulazione mostra misure con qualità differenti, sovracorrente temporizzata, trip, apertura dell'interruttore, tentativi di reset non sicuri e richiusura controllata.
+## Compilazione e caricamento ESP32
 
-## Visualizzazione dei dati del gateway da terminale
+Il progetto ESP-IDF si trova in `firmware/esp32`.
 
-Lo stato corrente e gli ultimi dieci eventi ricevuti dal gateway possono essere mostrati senza interrogare manualmente SQLite:
+1. Aprire `firmware/esp32` come directory del progetto ESP-IDF.
+2. Selezionare il target `esp32` e la porta seriale rilevata sul computer.
+3. Configurare la sezione **Resilient Field Node** con **ESP-IDF: SDK Configuration Editor**.
+4. Usare **Build Project** per compilare.
+5. Usare **Build, Flash and Monitor** per caricare e aprire il monitor seriale.
 
-```bash
-python scripts/show_gateway_data.py
+SSID, password Wi-Fi, URL del gateway e token API sono configurazioni locali contenute in `sdkconfig`, escluso da Git.
+
+## Struttura del repository
+
+```text
+config/
+    node.toml
+
+scripts/
+    gateway_server.py
+    measurement_example.py
+    run_all_tests.py
+    show_gateway_data.py
+
+src/resilient_field_node/
+    configuration.py
+    gateway.py
+    node.py
+    synchronization.py
+    domain/
+    storage/
+
+tests/
+    unit/
+    integration/
+
+c/
+    include/resilient_field_node.h
+    src/
+    tests/
+
+firmware/esp32/
+    CMakeLists.txt
+    main/
+        esp32.c
+        event_storage.c
+        gateway_client.c
+        network_time.c
+        node_event.h
+        oled_display.c
+        rtc_ds3231.c
+        wifi_connection.c
+
+docs/images/
 ```
 
-Per aggiornare automaticamente la visualizzazione ogni cinque secondi durante una dimostrazione:
+## Verifiche end-to-end completate
 
-```bash
-python scripts/show_gateway_data.py --watch
-```
+- Trip reale oltre `17 mA` dopo `2 s` e apertura fisica del relè.
+- Recupero di trip, stato del relè, sequenza e coda dopo il riavvio.
+- Protezione locale operativa durante connessione Wi-Fi e richieste HTTPS.
+- Invio FIFO degli eventi persistenti al gateway pubblico.
+- ACK applicativo soltanto dopo il salvataggio SQLite.
+- Nessun duplicato in seguito a una ritrasmissione.
+- Snapshot aggiornato prima dello storico arretrato.
+- Rilevamento di uno stato cambiato durante una richiesta in corso.
+- Compattazione della coda dopo la riproduzione reale della saturazione a 16 eventi.
+- Comandi USB `reset`, `close` e `restart` verificati con la scheda nel contenitore.
+- Visualizzazione online verificata con `rfn` e `rfn-watch`.
 
-La modalità continua si interrompe con `Ctrl+C`. Il visualizzatore mostra identificativo del dispositivo, stato della protezione, posizione dell'interruttore, ultima sequenza e storico dei trip con corrente, soglia e orario. I timestamp restano completi nel database ma vengono presentati senza il suffisso del fuso orario.
+## Sicurezza e configurazione
 
-Su PythonAnywhere è possibile definire nel file `~/.bashrc` due alias permanenti:
+- Le credenziali non sono incluse nel repository.
+- `sdkconfig`, database locali, ambienti virtuali e configurazioni VS Code specifiche del computer sono ignorati da Git.
+- Il token del gateway viene letto da una variabile d'ambiente.
+- L'ESP32 valida il certificato TLS tramite il bundle ESP-IDF.
+- Le query SQLite usano parametri separati dai dati ricevuti.
 
-```bash
-alias rfn='$HOME/.virtualenvs/rfn-gateway/bin/python $HOME/Resilient-field-node/scripts/show_gateway_data.py'
-alias rfn-watch='$HOME/.virtualenvs/rfn-gateway/bin/python $HOME/Resilient-field-node/scripts/show_gateway_data.py --watch'
-```
+Per un prodotto reale sarebbero necessari token distinti per dispositivo o mutual TLS, rotazione delle credenziali, autorizzazione granulare e monitoraggio centralizzato.
 
-`rfn` è l'abbreviazione di **Resilient Field Node** e mostra una singola lettura; `rfn-watch` aggiorna continuamente la stessa visualizzazione.
+## Limiti e sviluppi futuri
 
-## Compilazione e caricamento del firmware ESP32
-
-Il progetto ESP-IDF si trova in `firmware/esp32` ed è configurato per il target `esp32`.
-
-Da VS Code, con l'estensione ESP-IDF configurata:
-
-1. aprire `firmware/esp32` come directory del progetto ESP-IDF;
-2. usare **Build Project** per compilare;
-3. usare **Build, Flash and Monitor** per compilare, caricare il firmware e aprire il monitor seriale;
-4. usare `COM4` quando la scheda viene rilevata come convertitore CP210x.
-
-Le credenziali Wi-Fi, l'URL del gateway e il token API si configurano tramite **ESP-IDF: SDK Configuration Editor (menuconfig)** nella sezione `Resilient Field Node`. Non devono essere scritti nel codice né inseriti nel README.
-
-### Comandi dal monitor seriale USB
-
-Con il monitor seriale ESP-IDF aperto è possibile controllare il nodo senza accedere fisicamente ai pulsanti della scheda. I caratteri digitati potrebbero non essere mostrati dal terminale; il comando viene comunque inviato premendo **Invio**.
-
-- `reset`: azzera un trip valido, ma mantiene il relè aperto;
-- `close`: richiude il relè soltanto quando il trip è disattivato e non è presente una sovracorrente;
-- `restart`: riavvia il firmware via software senza cancellare la memoria NVS.
-
-La sequenza normale dopo un intervento è quindi: rimuovere la causa della sovracorrente, inviare `reset` e poi inviare `close`. Il pulsante BOOT continua a essere supportato come comando locale alternativo.
-
-Durante le prove è stato verificato che l'ESP32 continua ad acquisire la corrente e applicare la protezione mentre il Wi-Fi completa in parallelo l'associazione, ottiene un indirizzo IP e sincronizza il DS3231 tramite NTP con l'ora locale italiana.
-
-È stato inoltre verificato sull'hardware che il superamento continuativo della soglia genera un `NodeEvent`, apre il relè e produce un record diagnostico completo, ad esempio `EVENTO #1: PROTECTION_TRIP` con data, ora, corrente, soglia e stato `OPEN`. Il successivo reset del trip e la richiusura manuale restano due operazioni distinte e controllate.
-
-La coda persistente è stata verificata generando più trip consecutivi: gli eventi sono stati conservati come `PENDING`, il conteggio è aumentato senza perdita o sovrascrittura e, dopo il riavvio dell'ESP32, l'intera coda è stata recuperata. Con gli eventi `#4`, `#5` e `#6` presenti, il firmware ha continuato a indicare correttamente `#4` come prossimo evento da inviare, verificando l'ordinamento FIFO. Anche lo stato `Trip: TRUE` e l'interruttore `OPEN` sono stati ripristinati correttamente.
-
-La gestione dell'acknowledgment è stata verificata marcando l'evento `#4` come `ACKNOWLEDGED`: il conteggio `PENDING` è sceso da tre a due e il prossimo evento selezionato è diventato `#5`. Un secondo ACK per `#4` non ha modificato nuovamente la coda, confermando il comportamento idempotente.
-
-Il collegamento reale ESP32-gateway è stato verificato inviando in ordine FIFO gli eventi persistenti `#5` e `#6` al servizio PythonAnywhere tramite HTTPS. Per ciascun evento il firmware ha validato il certificato del server, ha ricevuto l'ACK applicativo e ha quindi aggiornato la voce NVS da `PENDING` ad `ACKNOWLEDGED`. Il secondo evento è stato trasmesso soltanto dopo il completamento del primo, mentre il ciclo locale di misura e protezione ha continuato a funzionare in parallelo.
-
-Dopo un riavvio hardware la coda è stata recuperata con tre eventi totali e zero eventi `PENDING`; il firmware ha mantenuto la prossima sequenza a `#7` e non ha ritrasmesso `#5` o `#6`, confermando la persistenza degli ACK nella NVS.
-
-La persistenza lato gateway è stata controllata direttamente nel database SQLite online: gli eventi `esp32-80f3da543d4c-event-5` e `esp32-80f3da543d4c-event-6` risultano registrati una sola volta con sequenze `5` e `6`, tipo `PROTECTION_TRIP` e interruttore `OPEN`.
-
-È stato inoltre verificato localmente l'archivio dello stato corrente: due snapshot consecutivi dello stesso `device_id` producono una sola riga e il secondo aggiorna correttamente trip, posizione dell'interruttore, sequenza e orari senza modificare lo storico degli eventi.
-
-Il nuovo endpoint `POST /state` è stato verificato attraverso il client di test Flask: un token errato restituisce `401`, due snapshot validi ricevono l'ACK e il secondo aggiorna la riga SQLite del dispositivo da `TRUE/OPEN` a `FALSE/CLOSED`.
-
-La stessa operazione è stata verificata sul gateway pubblico PythonAnywhere: due richieste HTTPS per `manual-state-test` hanno prodotto una sola riga, aggiornata al secondo snapshot con `boot_id` `test-boot-002`, sequenza `7`, trip attivo e interruttore `OPEN`.
-
-L'invio reale dello snapshot è stato verificato sull'ESP32: dopo Wi-Fi e sincronizzazione NTP il nodo ha trasmesso la sequenza `#6` con trip `FALSE` e interruttore `CLOSED`, ha validato il certificato PythonAnywhere e ha ricevuto `ACKNOWLEDGED`. Nei cicli successivi lo snapshot non è stato ritrasmesso perché lo stato non era cambiato, mentre l'acquisizione della corrente ha continuato a funzionare durante la richiesta HTTPS.
-
-La persistenza dello stesso snapshot è stata verificata direttamente nel database online: il record del dispositivo `esp32-80f3da543d4c` contiene il `boot_id` reale dell'avvio, timestamp italiano con offset `+02:00`, ultima sequenza `6`, trip `0` e interruttore `CLOSED`.
-
-La protezione contro gli ACK superati è stata verificata sull'hardware durante cambiamenti reali dello stato. Negli eventi `#9` e `#10` il trip è intervenuto mentre era ancora in corso l'invio dello snapshot precedente `FALSE/CLOSED`: il firmware ha rilevato la differenza dopo l'ACK, ha stampato `stato cambiato durante l'invio`, ha trasmesso prima il nuovo snapshot `TRUE/OPEN` con la sequenza aggiornata e soltanto dopo il relativo ACK ha inviato l'evento `PROTECTION_TRIP`. Anche un reset del trip e una richiusura avvenuti durante una richiesta sono stati rilevati e risincronizzati. Un riavvio intermedio ha inoltre recuperato dalla NVS lo stato persistente `FALSE/OPEN`, l'ultima sequenza `#8` e una coda senza eventi pendenti. Durante le prove successive, fino all'evento `#11`, il ciclo locale di misura è rimasto operativo e il precedente timeout I2C non si è ripresentato.
-
-La verifica conclusiva del database PythonAnywhere ha confermato che gli eventi `#9`, `#10` e `#11` sono presenti una sola volta, tutti come `PROTECTION_TRIP` con interruttore `OPEN` e con i rispettivi timestamp italiani. Lo snapshot corrente del dispositivo riporta correttamente l'ultima sequenza `#11`, trip disattivato e interruttore `CLOSED`, coerentemente con il reset e la richiusura eseguiti al termine della prova.
-
-I comandi seriali USB sono stati verificati sull'hardware con la scheda racchiusa nel contenitore: `reset` ha disattivato il trip mantenendo il relè aperto, `close` ha richiuso il relè dopo la rimozione della condizione di guasto e `restart` ha riavviato correttamente il firmware. Il ciclo di protezione e il bus I2C sono rimasti operativi durante la prova.
-
-La base dati del visualizzatore da terminale è stata verificata con test dedicati: lo store dello stato restituisce lo snapshot più recente, mentre lo store degli eventi restituisce lo storico in ordine dal più recente e applica correttamente il limite richiesto. Il comando normale e la modalità continua `--watch` sono stati provati localmente; la suite completa comprende 18 test superati. La prova conclusiva su PythonAnywhere ha mostrato correttamente lo stato `TRIP ATTIVO/OPEN` alla sequenza `#19` e gli ultimi dieci eventi reali ordinati dal più recente; anche gli alias `rfn` e `rfn-watch` sono stati verificati nella console online.
-
-La saturazione della coda NVS è stata riprodotta dopo 16 eventi: il trip e l'apertura fail-safe restavano operativi, ma il nuovo evento veniva rifiutato con `ESP_ERR_NO_MEM` perché anche le voci `ACKNOWLEDGED` occupavano gli slot. La correzione compatta la coda prima dell'inserimento e incrementa la sequenza soltanto dopo un salvataggio riuscito. La prova hardware successiva ha salvato l'evento `#20`, ridotto la coda da 16 elementi a un solo `PENDING`, ricevuto l'ACK del gateway e mostrato l'evento nel visualizzatore online.
-
-## Limiti attuali del proof of concept
-
-Non sono ancora implementati o completamente verificati:
-
-- evento diagnostico per misura `INVALID` o `STALE`;
-- stato operativo `DEGRADED`;
-- integrazione del modulo Ethernet W5500;
+- evento diagnostico persistente per misure `INVALID` o `STALE`;
+- stato operativo `DEGRADED` completo;
+- controllo lato gateway contro snapshot arrivati fuori ordine;
+- identificatori robusti anche dopo una cancellazione totale della NVS;
+- parser JSON completo della risposta sul firmware;
 - calibrazione metrologica dell'INA219;
-- test di durata, gestione completa dei guasti e validazione real-time;
-- hardware certificato per tensioni o correnti industriali.
+- test di durata, fault injection e validazione dei tempi real-time;
+- integrazione Ethernet W5500;
+- hardware, isolamento e certificazioni per applicazioni industriali.
 
+## Risultato
+
+Il progetto dimostra un flusso completo e resiliente: misura reale, decisione locale, apertura fail-safe, persistenza embedded, sincronizzazione sicura, deduplicazione server, archiviazione relazionale e consultazione remota. La perdita della rete riduce temporaneamente la visibilità, ma non interrompe la funzione di protezione.
